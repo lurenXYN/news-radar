@@ -1,0 +1,250 @@
+"""SQLite persistence for articles, sector hits, and settings."""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from contextlib import contextmanager
+from datetime import datetime, timedelta
+from typing import Any, Iterator
+from zoneinfo import ZoneInfo
+
+from news_radar.config import DATA_DIR, DB_PATH
+
+CN_TZ = ZoneInfo("Asia/Shanghai")
+
+
+def _now() -> str:
+    return datetime.now(CN_TZ).strftime("%Y-%m-%d %H:%M:%S")
+
+
+@contextmanager
+def connect() -> Iterator[sqlite3.Connection]:
+    """Yield a connection with row factory and foreign keys on."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def init_db() -> None:
+    """Create tables if missing."""
+    with connect() as conn:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS articles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                fingerprint TEXT NOT NULL UNIQUE,
+                source TEXT NOT NULL,
+                title TEXT NOT NULL,
+                summary TEXT DEFAULT '',
+                url TEXT DEFAULT '',
+                published_at TEXT,
+                fetched_at TEXT NOT NULL,
+                region TEXT DEFAULT 'A'
+            );
+            CREATE INDEX IF NOT EXISTS idx_articles_fetched ON articles(fetched_at);
+            CREATE INDEX IF NOT EXISTS idx_articles_published ON articles(published_at);
+
+            CREATE TABLE IF NOT EXISTS article_sectors (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                article_id INTEGER NOT NULL,
+                sector TEXT NOT NULL,
+                keyword TEXT NOT NULL,
+                weight REAL NOT NULL DEFAULT 1.0,
+                FOREIGN KEY(article_id) REFERENCES articles(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_as_sector ON article_sectors(sector);
+
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS push_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                push_key TEXT NOT NULL,
+                title TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_push_key ON push_log(push_key, created_at);
+            """
+        )
+
+
+def load_setting(key: str, default: Any = None) -> Any:
+    """Load one JSON setting."""
+    with connect() as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+    if not row:
+        return default
+    try:
+        return json.loads(row["value"])
+    except json.JSONDecodeError:
+        return row["value"]
+
+
+def save_setting(key: str, value: Any) -> None:
+    """Persist one JSON setting."""
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO settings(key, value) VALUES(?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, json.dumps(value, ensure_ascii=False)),
+        )
+
+
+def insert_article(row: dict[str, Any]) -> int | None:
+    """Insert article if fingerprint is new. Return id or None if duplicate."""
+    with connect() as conn:
+        try:
+            cur = conn.execute(
+                """
+                INSERT INTO articles(
+                    fingerprint, source, title, summary, url,
+                    published_at, fetched_at, region
+                ) VALUES (?,?,?,?,?,?,?,?)
+                """,
+                (
+                    row["fingerprint"],
+                    row.get("source") or "",
+                    row["title"],
+                    row.get("summary") or "",
+                    row.get("url") or "",
+                    row.get("published_at"),
+                    row.get("fetched_at") or _now(),
+                    row.get("region") or "A",
+                ),
+            )
+            return int(cur.lastrowid)
+        except sqlite3.IntegrityError:
+            return None
+
+
+def link_article_sectors(article_id: int, hits: list[dict[str, Any]]) -> None:
+    """Attach sector keyword hits to one article."""
+    if not hits:
+        return
+    with connect() as conn:
+        conn.executemany(
+            """
+            INSERT INTO article_sectors(article_id, sector, keyword, weight)
+            VALUES (?,?,?,?)
+            """,
+            [
+                (
+                    article_id,
+                    h["sector"],
+                    h["keyword"],
+                    float(h.get("weight") or 1.0),
+                )
+                for h in hits
+            ],
+        )
+
+
+def purge_old_articles(days: int) -> int:
+    """Delete articles older than retention window. Return deleted count."""
+    cutoff = (datetime.now(CN_TZ) - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+    with connect() as conn:
+        cur = conn.execute(
+            "DELETE FROM articles WHERE fetched_at < ? OR "
+            "(published_at IS NOT NULL AND published_at < ?)",
+            (cutoff, cutoff),
+        )
+        return int(cur.rowcount or 0)
+
+
+def list_recent_articles(limit: int = 80) -> list[dict[str, Any]]:
+    """Return newest articles with joined sector labels."""
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT a.*, GROUP_CONCAT(DISTINCT s.sector) AS sectors
+            FROM articles a
+            LEFT JOIN article_sectors s ON s.article_id = a.id
+            GROUP BY a.id
+            ORDER BY COALESCE(a.published_at, a.fetched_at) DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def sector_heat(hours: int = 24) -> list[dict[str, Any]]:
+    """Aggregate sector scores inside the heat window (A-share priority boost)."""
+    cutoff = (datetime.now(CN_TZ) - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                s.sector AS sector,
+                COUNT(DISTINCT s.article_id) AS article_count,
+                SUM(s.weight) AS raw_score,
+                GROUP_CONCAT(DISTINCT s.keyword) AS keywords
+            FROM article_sectors s
+            JOIN articles a ON a.id = s.article_id
+            WHERE COALESCE(a.published_at, a.fetched_at) >= ?
+            GROUP BY s.sector
+            ORDER BY raw_score DESC
+            """,
+            (cutoff,),
+        ).fetchall()
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        d = dict(r)
+        d["raw_score"] = round(float(d.get("raw_score") or 0), 2)
+        d["article_count"] = int(d.get("article_count") or 0)
+        out.append(d)
+    return out
+
+
+def recent_articles_for_sector(sector: str, hours: int = 24, limit: int = 8) -> list[dict[str, Any]]:
+    """Return recent articles that hit one sector."""
+    cutoff = (datetime.now(CN_TZ) - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT a.title, a.url, a.source, a.published_at, a.fetched_at
+            FROM articles a
+            JOIN article_sectors s ON s.article_id = a.id
+            WHERE s.sector = ?
+              AND COALESCE(a.published_at, a.fetched_at) >= ?
+            ORDER BY COALESCE(a.published_at, a.fetched_at) DESC
+            LIMIT ?
+            """,
+            (sector, cutoff, limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def was_pushed_recently(push_key: str, cooldown_sec: int) -> bool:
+    """Return True if the same push_key was sent inside the cooldown window."""
+    cutoff = (datetime.now(CN_TZ) - timedelta(seconds=cooldown_sec)).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM push_log WHERE push_key=? AND created_at>=? LIMIT 1",
+            (push_key, cutoff),
+        ).fetchone()
+    return row is not None
+
+
+def log_push(push_key: str, title: str) -> None:
+    """Record a successful Server酱 push for cooldown."""
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO push_log(push_key, title, created_at) VALUES (?,?,?)",
+            (push_key, title, _now()),
+        )

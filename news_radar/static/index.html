@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>新闻雷达 · 板块观察</title>
+  <style>
+    :root {
+      --bg: #0b1220;
+      --card: #141c2b;
+      --line: #2a364a;
+      --text: #e8eef6;
+      --muted: #8b97a8;
+      --accent: #f5c542;
+      --up: #ff6b6b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    header {
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+      justify-content: space-between;
+    }
+    h1 { margin: 0; font-size: 1.25rem; letter-spacing: 0.02em; }
+    .meta { color: var(--muted); font-size: 0.85rem; }
+    main { padding: 16px 20px 40px; max-width: 1100px; margin: 0 auto; }
+    .grid { display: grid; gap: 14px; grid-template-columns: 1.1fr 1fr; }
+    @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 14px 16px;
+    }
+    .card h2 { margin: 0 0 10px; font-size: 1rem; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { color: var(--muted); font-weight: 600; }
+    .score { color: var(--accent); font-weight: 700; }
+    .btn {
+      background: #243044;
+      color: var(--text);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px 12px;
+      cursor: pointer;
+    }
+    .btn:hover { border-color: var(--accent); }
+    .btn.primary { background: #3a2f12; border-color: var(--accent); color: var(--accent); }
+    label { display: block; font-size: 0.82rem; color: var(--muted); margin: 8px 0 4px; }
+    input[type=text], input[type=number] {
+      width: 100%;
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: #0f1624;
+      color: var(--text);
+    }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .chk { display: flex; align-items: center; gap: 8px; margin-top: 10px; color: var(--muted); font-size: 0.9rem; }
+    a { color: #7dd3fc; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .art-title { display: block; margin-bottom: 4px; }
+    .warn { color: #f0a36b; font-size: 0.85rem; }
+    .etf { color: var(--muted); font-size: 0.8rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>新闻雷达 · 板块观察</h1>
+      <div class="meta" id="stamp">加载中…</div>
+    </div>
+    <div class="row">
+      <button class="btn" id="btnRefresh">立即刷新</button>
+      <button class="btn primary" id="btnTestPush">测试 Server酱</button>
+    </div>
+  </header>
+  <main>
+    <div class="grid">
+      <section class="card">
+        <h2>可能异动板块（优先大 A）</h2>
+        <table>
+          <thead>
+            <tr><th>板块</th><th>热度</th><th>条数</th><th>ETF</th></tr>
+          </thead>
+          <tbody id="sectors"></tbody>
+        </table>
+      </section>
+      <section class="card">
+        <h2>Server酱 / 参数</h2>
+        <p class="meta">配置方式对齐「牛来-作战台」：SendKey（SCT…）+ 开关。也可用环境变量 <code>NEWS_RADAR_SERVERCHAN_SENDKEY</code>。</p>
+        <label>SendKey（留空则不改）</label>
+        <input type="text" id="scKey" placeholder="SCT..." autocomplete="off" />
+        <div class="chk"><input type="checkbox" id="scOn" /> 启用推送（热度达阈值时微信提醒）</div>
+        <label>刷新间隔（秒）</label>
+        <input type="number" id="refreshSec" min="60" max="3600" />
+        <label>热度窗口（小时）</label>
+        <input type="number" id="heatHours" min="1" max="168" />
+        <label>推送热度阈值</label>
+        <input type="number" id="pushMin" min="1" step="0.5" />
+        <div class="row" style="margin-top:12px">
+          <button class="btn primary" id="btnSave">保存设置</button>
+          <span class="meta" id="setMsg"></span>
+        </div>
+      </section>
+    </div>
+    <section class="card" style="margin-top:14px">
+      <h2>最近新闻</h2>
+      <div id="articles"></div>
+    </section>
+    <p class="meta" style="margin-top:16px">仅供学习观察，不构成投资建议。全球新闻会映射到大 A 相关板块。</p>
+  </main>
+  <script>
+    async function loadSettings() {
+      const r = await fetch("/api/settings");
+      const s = await r.json();
+      document.getElementById("scOn").checked = !!s.serverchan_enabled;
+      document.getElementById("scKey").placeholder = s.serverchan_sendkey_set
+        ? ("已保存 " + (s.serverchan_sendkey || ""))
+        : "SCT...";
+      document.getElementById("refreshSec").value = s.refresh_seconds;
+      document.getElementById("heatHours").value = s.heat_window_hours;
+      document.getElementById("pushMin").value = s.push_score_min;
+    }
+
+    function render(snap) {
+      const stamp = document.getElementById("stamp");
+      const st = snap.stats || {};
+      stamp.textContent = (snap.updated_at || "—")
+        + " · 抓取 " + (st.fetched || 0)
+        + " · 新增 " + (st.inserted || 0)
+        + " · 推送 " + (st.pushed || 0)
+        + (snap.ok ? "" : " · 异常");
+      const tb = document.getElementById("sectors");
+      tb.innerHTML = "";
+      (snap.sectors || []).slice(0, 20).forEach((row) => {
+        const tr = document.createElement("tr");
+        const etfs = (row.etfs || []).join(" ");
+        tr.innerHTML = "<td><strong>" + esc(row.sector) + "</strong>"
+          + tipArts(row.articles)
+          + "</td><td class='score'>" + Number(row.score || 0).toFixed(1)
+          + "</td><td>" + (row.article_count || 0)
+          + "</td><td class='etf'>" + esc(etfs) + "</td>";
+        tb.appendChild(tr);
+      });
+      const box = document.getElementById("articles");
+      box.innerHTML = "";
+      (snap.articles || []).slice(0, 40).forEach((a) => {
+        const div = document.createElement("div");
+        div.style.marginBottom = "10px";
+        const t = esc(a.title || "");
+        const link = a.url
+          ? ("<a class='art-title' href='" + esc(a.url) + "' target='_blank' rel='noopener'>" + t + "</a>")
+          : ("<span class='art-title'>" + t + "</span>");
+        div.innerHTML = link
+          + "<div class='meta'>" + esc(a.source || "") + " · "
+          + esc(a.published_at || a.fetched_at || "") + " · "
+          + esc(a.sectors || "") + "</div>";
+        box.appendChild(div);
+      });
+    }
+
+    function tipArts(arts) {
+      if (!arts || !arts.length) return "";
+      const lines = arts.slice(0, 2).map((a) => "<div class='meta'>" + esc(a.title || "") + "</div>").join("");
+      return lines;
+    }
+
+    function esc(s) {
+      return String(s || "")
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    }
+
+    async function tick() {
+      const r = await fetch("/api/snapshot");
+      render(await r.json());
+    }
+
+    document.getElementById("btnRefresh").onclick = async () => {
+      document.getElementById("stamp").textContent = "刷新中…";
+      await fetch("/api/refresh", { method: "POST" });
+      await tick();
+    };
+    document.getElementById("btnSave").onclick = async () => {
+      const body = {
+        serverchan_enabled: document.getElementById("scOn").checked,
+        refresh_seconds: Number(document.getElementById("refreshSec").value),
+        heat_window_hours: Number(document.getElementById("heatHours").value),
+        push_score_min: Number(document.getElementById("pushMin").value),
+      };
+      const key = document.getElementById("scKey").value.trim();
+      if (key) body.serverchan_sendkey = key;
+      const r = await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const msg = document.getElementById("setMsg");
+      if (r.ok) {
+        msg.textContent = "已保存";
+        document.getElementById("scKey").value = "";
+        await loadSettings();
+      } else {
+        msg.textContent = "保存失败";
+      }
+    };
+    document.getElementById("btnTestPush").onclick = async () => {
+      const r = await fetch("/api/settings/test-push", { method: "POST" });
+      const msg = document.getElementById("setMsg");
+      if (r.ok) msg.textContent = "测试推送已发送";
+      else {
+        const t = await r.text();
+        msg.textContent = "推送失败：" + t.slice(0, 80);
+      }
+    };
+
+    loadSettings();
+    tick();
+    setInterval(tick, 30000);
+  </script>
+</body>
+</html>
