@@ -49,6 +49,8 @@ set NEWS_RADAR_SERVERCHAN_SENDKEY=SCTxxxx
 
 ## 发布（独立仓）
 
+GitHub：https://github.com/lurenXYN/news-radar
+
 本目录可同步到独立 Git 仓再推 GitHub（**不要**从 go-learning push）：
 
 1. 改 `apps/news-radar/`
