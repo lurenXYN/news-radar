@@ -8,7 +8,8 @@ from typing import Any
 import httpx
 
 from news_radar.config import HTTP_HEADERS
-from news_radar.lexicon import BOARD_ALIASES
+from news_radar.lexicon import BOARD_ALIASES, BOARD_BK
+from news_radar.score import bks_for_sector
 
 log = logging.getLogger("news_radar.boards")
 
@@ -87,7 +88,13 @@ async def _gather_boards(client: httpx.AsyncClient) -> tuple[list[dict], list[di
 def match_board_for_sector(
     sector: str, boards: list[dict[str, Any]]
 ) -> dict[str, Any] | None:
-    """Pick the best East Money board for a lexicon sector via name aliases."""
+    """Pick East Money board: prefer configured BK codes, then name aliases."""
+    by_bk = {str(b.get("bk") or "").upper(): b for b in boards}
+    for code in bks_for_sector(sector) or BOARD_BK.get(sector) or []:
+        hit = by_bk.get(str(code).upper())
+        if hit:
+            return hit
+
     aliases = list(BOARD_ALIASES.get(sector) or [])
     if not aliases:
         aliases = [sector.split("/")[0]]
@@ -95,11 +102,10 @@ def match_board_for_sector(
     best_score = -1.0
     for b in boards:
         name = str(b.get("name") or "")
-        hit = sum(1 for a in aliases if a and a in name)
-        if hit <= 0:
+        hit_n = sum(1 for a in aliases if a and a in name)
+        if hit_n <= 0:
             continue
-        # Prefer exact-ish names and stronger day moves when multiple hit.
-        score = hit * 10 + abs(float(b.get("pct") or 0))
+        score = hit_n * 10 + abs(float(b.get("pct") or 0))
         if score > best_score:
             best_score = score
             best = b

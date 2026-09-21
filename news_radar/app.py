@@ -55,8 +55,19 @@ def index() -> FileResponse:
 
 @app.get("/api/health")
 def health() -> dict[str, Any]:
-    """Liveness probe."""
-    return {"ok": True, "updated_at": engine.snapshot.get("updated_at")}
+    """Liveness probe with light snapshot stats for desk status dots."""
+    snap = engine.snapshot or {}
+    st = snap.get("stats") or {}
+    return {
+        "ok": True,
+        "updated_at": snap.get("updated_at"),
+        "sectors": len(snap.get("sectors") or []),
+        "watch": len(snap.get("watch") or []),
+        "fetched": st.get("fetched"),
+        "inserted": st.get("inserted"),
+        "deduped": st.get("deduped"),
+        "boards": st.get("boards"),
+    }
 
 
 @app.get("/api/snapshot")

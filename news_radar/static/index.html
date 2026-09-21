@@ -93,7 +93,7 @@
         <p class="meta">排序：共振 / 盘面已动优先；相对热度=较上一同等时间窗。</p>
         <table>
           <thead>
-            <tr><th>板块</th><th>确认</th><th>热度</th><th>相对</th><th>盘面</th><th>ETF</th></tr>
+            <tr><th>板块</th><th>确认</th><th>情绪</th><th>热度</th><th>相对</th><th>盘面</th><th>ETF</th></tr>
           </thead>
           <tbody id="sectors"></tbody>
         </table>
@@ -147,6 +147,7 @@
       stamp.textContent = (snap.updated_at || "—")
         + " · 抓取 " + (st.fetched || 0)
         + " · 新增 " + (st.inserted || 0)
+        + (st.deduped ? (" · 去重 " + st.deduped) : "")
         + " · 板块行情 " + (st.boards || 0)
         + " · 推送 " + (st.pushed || 0)
         + (snap.ok ? "" : " · 异常");
@@ -157,9 +158,13 @@
         const etfs = (row.etfs || []).join(" ");
         const pct = row.board_pct == null ? "—" : (Number(row.board_pct) >= 0 ? "+" : "") + Number(row.board_pct).toFixed(2) + "%";
         const delta = (Number(row.delta || 0) >= 0 ? "+" : "") + Number(row.delta || 0).toFixed(1);
+        const tone = row.tone_label || "—";
+        const hint = row.action_hint ? ("<div class='meta'>" + esc(row.action_hint) + "</div>") : "";
         tr.innerHTML = "<td><strong>" + esc(row.sector) + "</strong>"
           + tipArts(row.articles)
+          + hint
           + "</td><td>" + esc(row.confirm_label || "—")
+          + "</td><td>" + esc(tone)
           + "</td><td class='score'>" + Number(row.score || 0).toFixed(1)
           + "</td><td>" + delta
           + "</td><td>" + pct
@@ -169,7 +174,9 @@
       const w = document.getElementById("watch");
       const watch = snap.watch || [];
       w.innerHTML = watch.length
-        ? watch.map((r) => esc(r.sector) + "（" + esc(r.confirm_label || "") + "）").join(" · ")
+        ? watch.map((r) => esc(r.sector) + "（" + esc(r.confirm_label || "")
+          + (r.tone_label && r.tone_label !== "中性" ? "·" + esc(r.tone_label) : "")
+          + "）").join(" · ")
         : "暂无重点观察";
       const box = document.getElementById("articles");
       box.innerHTML = "";

@@ -12,6 +12,7 @@ import httpx
 from news_radar import config as cfg
 from news_radar.boards import confirm_label, fetch_board_quotes, match_board_for_sector
 from news_radar.collect import collect_all
+from news_radar.dedupe import dedupe_articles
 from news_radar.db import (
     heat_map,
     init_db,
@@ -26,7 +27,8 @@ from news_radar.db import (
     was_pushed_recently,
 )
 from news_radar.notify import format_morning_digest, format_sector_push, notify_serverchan
-from news_radar.score import etfs_for_sector, match_sectors
+from news_radar.score import action_hint, etfs_for_sector, match_sectors
+from news_radar.sentiment import classify_tone
 from news_radar.settings import setting
 
 log = logging.getLogger("news_radar.engine")
@@ -117,8 +119,12 @@ class RadarEngine:
                     boards = await fetch_board_quotes(client)
                 except Exception as exc:
                     warnings.append(f"boards: {exc}")
+            rows, deduped = dedupe_articles(rows)
             for row in rows:
                 hits = match_sectors(row.get("title") or "", row.get("summary") or "")
+                tone = classify_tone(row.get("title") or "", row.get("summary") or "")
+                row["tone"] = tone.get("tone")
+                row["tone_label"] = tone.get("label")
                 aid = insert_article(row)
                 if aid is None:
                     continue
@@ -156,25 +162,37 @@ class RadarEngine:
                 board = match_board_for_sector(sector, boards)
                 board_pct = float(board["pct"]) if board else None
                 conf = confirm_label(news_score=score, delta=delta, board_pct=board_pct)
-                sectors.append(
-                    {
-                        **h,
-                        "etfs": etfs,
-                        "articles": arts,
-                        "score": score,
-                        "prev_score": prev,
-                        "delta": delta,
-                        "delta_1h": delta_1h,
-                        "rising": delta >= float(cfg.REL_HEAT_MIN_DELTA),
-                        "board_name": (board or {}).get("name"),
-                        "board_bk": (board or {}).get("bk"),
-                        "board_pct": board_pct,
-                        "confirm": conf["confirm"],
-                        "confirm_label": conf["label"],
-                        "confirm_note": conf["note"],
-                        "label": conf["label"],
-                    }
-                )
+                # Tone from newest article titles in this sector window.
+                tones = [classify_tone(str(a.get("title") or "")) for a in arts[:5]]
+                bear_n = sum(1 for t in tones if t.get("tone") == "bearish")
+                bull_n = sum(1 for t in tones if t.get("tone") == "bullish")
+                if bear_n > bull_n and bear_n > 0:
+                    tone, tone_label = "bearish", "偏空"
+                elif bull_n > bear_n and bull_n > 0:
+                    tone, tone_label = "bullish", "偏多"
+                else:
+                    tone, tone_label = "neutral", "中性"
+                row_out = {
+                    **h,
+                    "etfs": etfs,
+                    "articles": arts,
+                    "score": score,
+                    "prev_score": prev,
+                    "delta": delta,
+                    "delta_1h": delta_1h,
+                    "rising": delta >= float(cfg.REL_HEAT_MIN_DELTA),
+                    "board_name": (board or {}).get("name"),
+                    "board_bk": (board or {}).get("bk"),
+                    "board_pct": board_pct,
+                    "confirm": conf["confirm"],
+                    "confirm_label": conf["label"],
+                    "confirm_note": conf["note"],
+                    "label": conf["label"],
+                    "tone": tone,
+                    "tone_label": tone_label,
+                }
+                row_out["action_hint"] = action_hint(row_out)
+                sectors.append(row_out)
             sectors.sort(key=_rank_key, reverse=True)
 
             # Watch list: rising and/or board-confirmed — what users should stare at.
@@ -202,8 +220,9 @@ class RadarEngine:
                 "articles": list_recent_articles(60),
                 "warnings": warnings,
                 "stats": {
-                    "fetched": len(rows),
+                    "fetched": len(rows) + deduped,
                     "inserted": new_n,
+                    "deduped": deduped,
                     "purged": purged,
                     "pushed": pushed,
                     "boards": len(boards),
@@ -228,7 +247,11 @@ class RadarEngine:
                     "confirm": r.get("confirm"),
                     "confirm_label": r.get("confirm_label"),
                     "confirm_note": r.get("confirm_note"),
+                    "tone": r.get("tone"),
+                    "tone_label": r.get("tone_label"),
+                    "action_hint": r.get("action_hint"),
                     "board_name": r.get("board_name"),
+                    "board_bk": r.get("board_bk"),
                     "board_pct": r.get("board_pct"),
                     "etfs": r.get("etfs") or [],
                     "keywords": r.get("keywords"),
@@ -246,6 +269,7 @@ class RadarEngine:
             "ok": bool(snap.get("ok")),
             "updated_at": snap.get("updated_at"),
             "sectors": out,
+            "stats": snap.get("stats") or {},
         }
 
     def _maybe_push(self, sectors: list[dict[str, Any]], *, now: datetime) -> int:
