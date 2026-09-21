@@ -5,13 +5,17 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterator
-from zoneinfo import ZoneInfo
 
 from news_radar.config import DATA_DIR, DB_PATH
 
-CN_TZ = ZoneInfo("Asia/Shanghai")
+try:
+    from zoneinfo import ZoneInfo
+
+    CN_TZ = ZoneInfo("Asia/Shanghai")
+except Exception:  # noqa: BLE001 — Windows without tzdata
+    CN_TZ = timezone(timedelta(hours=8))
 
 
 def _now() -> str:

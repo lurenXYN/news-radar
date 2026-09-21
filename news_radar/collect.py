@@ -5,16 +5,20 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import httpx
 
 from news_radar.config import HTTP_HEADERS
 
 log = logging.getLogger("news_radar.collect")
-CN_TZ = ZoneInfo("Asia/Shanghai")
+try:
+    from zoneinfo import ZoneInfo
+
+    CN_TZ = ZoneInfo("Asia/Shanghai")
+except Exception:  # noqa: BLE001
+    CN_TZ = timezone(timedelta(hours=8))
 
 
 def _fp(*parts: str) -> str:

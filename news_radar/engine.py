@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -28,7 +27,12 @@ from news_radar.score import etfs_for_sector, match_sectors
 from news_radar.settings import setting
 
 log = logging.getLogger("news_radar.engine")
-CN_TZ = ZoneInfo("Asia/Shanghai")
+try:
+    from zoneinfo import ZoneInfo
+
+    CN_TZ = ZoneInfo("Asia/Shanghai")
+except Exception:  # noqa: BLE001
+    CN_TZ = timezone(timedelta(hours=8))
 
 
 class RadarEngine:
