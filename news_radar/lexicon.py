@@ -233,17 +233,18 @@ SECTOR_RULES: list[dict[str, Any]] = [
 ENTITY_MAP: list[dict[str, Any]] = [
     {"names": ["宁德时代", "宁德"], "sector": "新能源/锂电", "weight": 1.25},
     {"names": ["比亚迪"], "sector": "新能源/锂电", "weight": 1.2},
-    {"names": ["隆基", "通威", "阳光电源"], "sector": "新能源/锂电", "weight": 1.1},
-    {"names": ["中芯国际", "寒武纪", "韦尔股份", "北方华创"], "sector": "半导体", "weight": 1.25},
-    {"names": ["茅台", "五粮液", "泸州老窖"], "sector": "白酒/消费", "weight": 1.2},
-    {"names": ["恒瑞", "药明康德", "百济"], "sector": "创新药/医药", "weight": 1.15},
-    {"names": ["中国平安", "招商银行", "工商银行"], "sector": "银行", "weight": 1.05},
-    {"names": ["中信证券", "东方财富"], "sector": "证券", "weight": 1.1},
-    {"names": ["中国船舶", "航发动力", "中航沈飞"], "sector": "军工", "weight": 1.15},
-    {"names": ["紫金矿业", "山东黄金"], "sector": "有色/贵金属", "weight": 1.1},
+    {"names": ["隆基", "通威", "阳光电源", "亿纬锂能", "国轩高科"], "sector": "新能源/锂电", "weight": 1.1},
+    {"names": ["中芯国际", "寒武纪", "韦尔股份", "北方华创", "海光信息", "中微公司"], "sector": "半导体", "weight": 1.25},
+    {"names": ["茅台", "五粮液", "泸州老窖", "山西汾酒"], "sector": "白酒/消费", "weight": 1.2},
+    {"names": ["恒瑞", "药明康德", "百济", "信达生物"], "sector": "创新药/医药", "weight": 1.15},
+    {"names": ["中国平安", "招商银行", "工商银行", "兴业银行"], "sector": "银行", "weight": 1.05},
+    {"names": ["中信证券", "东方财富", "华泰证券"], "sector": "证券", "weight": 1.1},
+    {"names": ["中国船舶", "航发动力", "中航沈飞", "中航西飞"], "sector": "军工", "weight": 1.15},
+    {"names": ["紫金矿业", "山东黄金", "洛阳钼业"], "sector": "有色/贵金属", "weight": 1.1},
     {"names": ["中国石油", "中国海油", "中国石化"], "sector": "石油石化", "weight": 1.1},
-    {"names": ["腾讯", "阿里", "美团", "小米集团"], "sector": "港股科技映射", "weight": 1.05},
-    {"names": ["英伟达", "NVIDIA", "台积电", "TSMC"], "sector": "半导体", "weight": 1.1},
+    {"names": ["万科", "保利发展", "招商蛇口"], "sector": "房地产", "weight": 1.05},
+    {"names": ["腾讯", "阿里", "美团", "小米集团", "网易"], "sector": "港股科技映射", "weight": 1.05},
+    {"names": ["英伟达", "NVIDIA", "台积电", "TSMC", "阿斯麦", "ASML"], "sector": "半导体", "weight": 1.1},
 ]
 
 # Overnight / global cue → A-share transmission note for evening digest.

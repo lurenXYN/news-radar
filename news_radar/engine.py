@@ -16,6 +16,7 @@ from news_radar.dedupe import dedupe_articles
 from news_radar.calendar import is_trading_day
 from news_radar.db import (
     any_push_keys_recently,
+    count_pushes_today,
     heat_map,
     init_db,
     insert_article,
@@ -25,6 +26,7 @@ from news_radar.db import (
     list_unsettle_resonance_marks,
     log_push,
     purge_old_articles,
+    query_push_log,
     recent_articles_for_sector,
     resonance_backtest_summary,
     save_resonance_outcome,
@@ -36,6 +38,7 @@ from news_radar.db import (
 from news_radar.lexicon import overnight_hints_from_text
 from news_radar.notify import (
     format_change_brief,
+    format_overnight_sections,
     format_watch_digest,
     notify_serverchan,
 )
@@ -43,6 +46,7 @@ from news_radar.schedule import push_schedule_status
 from news_radar.score import action_hint, etfs_for_sector, match_sectors
 from news_radar.sentiment import classify_tone
 from news_radar.settings import setting
+from news_radar.themes import merge_by_theme
 
 log = logging.getLogger("news_radar.engine")
 try:
@@ -89,15 +93,42 @@ def _watch_fingerprint(rows: list[dict[str, Any]]) -> str:
 def _pick_digest_rows(
     sectors: list[dict[str, Any]], *, min_score: float, top_n: int
 ) -> list[dict[str, Any]]:
-    """Select Top-N rows worth putting in a 总报."""
+    """Select Top-N rows worth putting in a 总报 (blacklist + theme merge)."""
+    blocked = {
+        x.strip()
+        for x in str(setting("sector_blacklist", "") or "").replace("，", ",").split(",")
+        if x.strip()
+    }
     picked = [
         s
         for s in sectors
-        if float(s.get("score") or 0) >= min_score
-        or s.get("confirm") in ("resonance", "board_lead")
-        or s.get("rising")
-    ][: max(1, top_n)]
-    return picked
+        if str(s.get("sector") or "") not in blocked
+        and (
+            float(s.get("score") or 0) >= min_score
+            or s.get("confirm") in ("resonance", "board_lead")
+            or s.get("rising")
+        )
+    ]
+    return merge_by_theme(picked, limit=max(1, top_n))
+
+
+def _age_decay_mult(published_at: str | None, fetched_at: str | None) -> float:
+    """Down-weight stale headlines (overnight news fades into the afternoon)."""
+    raw = (published_at or fetched_at or "").strip()
+    if len(raw) < 16:
+        return 1.0
+    try:
+        ts = datetime.strptime(raw[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=CN_TZ)
+    except ValueError:
+        return 1.0
+    hours = max(0.0, (datetime.now(CN_TZ) - ts).total_seconds() / 3600.0)
+    if hours <= 6:
+        return 1.0
+    if hours <= 18:
+        return 0.75
+    if hours <= 36:
+        return 0.5
+    return 0.35
 
 
 _CONFIRM_RANK = {
@@ -246,6 +277,10 @@ class RadarEngine:
             rows, deduped = dedupe_articles(rows)
             for row in rows:
                 hits = match_sectors(row.get("title") or "", row.get("summary") or "")
+                decay = _age_decay_mult(row.get("published_at"), row.get("fetched_at"))
+                if decay != 1.0 and hits:
+                    for h in hits:
+                        h["weight"] = round(float(h.get("weight") or 1.0) * decay, 3)
                 tone = classify_tone(row.get("title") or "", row.get("summary") or "")
                 row["tone"] = tone.get("tone")
                 row["tone_label"] = tone.get("label")
@@ -286,6 +321,14 @@ class RadarEngine:
                 board = match_board_for_sector(sector, boards)
                 board_pct = float(board["pct"]) if board else None
                 conf = confirm_label(news_score=score, delta=delta, board_pct=board_pct)
+                from news_radar.score import bks_for_sector
+
+                wanted_bks = bks_for_sector(sector)
+                bk_warn = bool(wanted_bks) and (
+                    board is None
+                    or str(board.get("bk") or "").upper()
+                    not in {str(x).upper() for x in wanted_bks}
+                )
                 # Tone from newest article titles in this sector window.
                 tones = [classify_tone(str(a.get("title") or "")) for a in arts[:5]]
                 bear_n = sum(1 for t in tones if t.get("tone") == "bearish")
@@ -314,6 +357,7 @@ class RadarEngine:
                     "label": conf["label"],
                     "tone": tone,
                     "tone_label": tone_label,
+                    "bk_warn": bk_warn,
                 }
                 row_out["action_hint"] = action_hint(row_out)
                 sectors.append(row_out)
@@ -327,6 +371,14 @@ class RadarEngine:
                 or s.get("confirm") in ("resonance", "board_lead")
                 or (float(s.get("score") or 0) >= 6 and s.get("confirm") == "news_only")
             ][:12]
+            top3 = merge_by_theme(
+                [
+                    s
+                    for s in sectors
+                    if s.get("confirm") in ("resonance", "board_lead") or s.get("rising")
+                ],
+                limit=3,
+            )
 
             pushed = 0
             try:
@@ -338,6 +390,10 @@ class RadarEngine:
                 self._settle_resonance(boards, now=now)
             except Exception as exc:
                 warnings.append(f"resonance: {exc}")
+            try:
+                self._maybe_empty_window_alert(now=now)
+            except Exception as exc:
+                warnings.append(f"empty_alert: {exc}")
 
             stamp = now.strftime("%Y-%m-%d %H:%M:%S")
             self.snapshot = {
@@ -345,6 +401,7 @@ class RadarEngine:
                 "updated_at": stamp,
                 "trading_day": is_trading_day(now),
                 "sectors": sectors[:30],
+                "top3": top3,
                 "watch": watch,
                 "articles": list_recent_articles(60),
                 "warnings": warnings,
@@ -357,6 +414,10 @@ class RadarEngine:
                     "pushed": pushed,
                     "boards": len(boards),
                     "heat_window_hours": hours,
+                    "pushes_today": count_pushes_today(ok_only=True),
+                    "push_daily_max": int(
+                        setting("push_daily_max", cfg.PUSH_DAILY_MAX)
+                    ),
                 },
             }
             return self.snapshot
@@ -506,14 +567,7 @@ class RadarEngine:
                     blob += "\n" + str(a.get("title") or "")
             hints = overnight_hints_from_text(blob, limit=5)
             if hints:
-                extra.append("## 隔夜/全球 → A 股传导")
-                for h in hints:
-                    etf = (h.get("etfs") or [""])[0]
-                    extra.append(
-                        f"- **{h.get('sector')}**：{h.get('note')}"
-                        + (f" · ETF `{etf}`" if etf else "")
-                    )
-                extra.append("")
+                extra.extend(format_overnight_sections(hints))
         if not picked and not extra:
             return 0
         as_of = now.strftime("%Y-%m-%d %H:%M")
@@ -525,12 +579,68 @@ class RadarEngine:
             tip=tip,
             extra_sections=extra or None,
         )
-        if notify_serverchan(key, title, desp):
-            log_push(push_key, title)
+        if self._send_push(key, push_key, title, desp, kind=kind):
             self._update_brief_baseline(sectors)
             log.info("serverchan %s digest n=%s", kind, len(picked))
             return 1
         return 0
+
+    def _send_push(
+        self, key: str, push_key: str, title: str, desp: str, *, kind: str = ""
+    ) -> bool:
+        """Apply daily quota, call Server酱, and always write history."""
+        max_n = int(setting("push_daily_max", cfg.PUSH_DAILY_MAX))
+        if count_pushes_today(ok_only=True) >= max_n:
+            log_push(
+                push_key,
+                title,
+                kind=kind,
+                ok=False,
+                desp=desp,
+                error=f"daily quota {max_n}",
+            )
+            log.warning("push blocked by daily quota key=%s", push_key)
+            return False
+        result = notify_serverchan(key, title, desp)
+        ok = bool(result.get("ok"))
+        log_push(
+            push_key,
+            title,
+            kind=kind or "",
+            ok=ok,
+            desp=desp,
+            error=str(result.get("error") or ""),
+        )
+        return ok
+
+    def _maybe_empty_window_alert(self, *, now: datetime) -> None:
+        """Once per day: if morning window passed with no digest, notify once."""
+        if not is_trading_day(now):
+            return
+        if not bool(setting("serverchan_enabled", False)):
+            return
+        key = str(setting("serverchan_sendkey", "") or "").strip()
+        if not key:
+            return
+        end_h, end_m = _parse_hhmm(cfg.MORNING_PUSH_END)
+        minutes = now.hour * 60 + now.minute
+        if minutes < end_h * 60 + end_m + 5:
+            return
+        if minutes > 10 * 60 + 30:
+            return
+        day = now.strftime("%Y-%m-%d")
+        digest_key = f"digest:morning:{day}"
+        if was_pushed_recently(digest_key, 20 * 3600):
+            return
+        alert_key = f"alert:empty:morning:{day}"
+        if was_pushed_recently(alert_key, 20 * 3600):
+            return
+        title = "新闻雷达 · 盘前总报空窗"
+        desp = (
+            f"交易日 {day} 盘前窗口已过，但未成功发出盘前总报。\n\n"
+            "请检查：热度是否过低、SendKey、配额、服务是否在窗口内在线。"
+        )
+        self._send_push(key, alert_key, title, desp, kind="alert")
 
     def _settle_resonance(
         self, boards: list[dict[str, Any]], *, now: datetime
@@ -576,7 +686,13 @@ class RadarEngine:
             "change_brief_enabled": bool(
                 setting("change_brief_enabled", cfg.CHANGE_BRIEF_ENABLED)
             ),
+            "pushes_today": count_pushes_today(ok_only=True),
+            "push_daily_max": int(setting("push_daily_max", cfg.PUSH_DAILY_MAX)),
         }
+
+    def query_history(self, **kwargs: Any) -> dict[str, Any]:
+        """Proxy to push history query for the API layer."""
+        return query_push_log(**kwargs)
 
     def _update_brief_baseline(self, sectors: list[dict[str, Any]]) -> None:
         """Refresh change-brief baseline from current watch-like rows."""
@@ -602,7 +718,7 @@ class RadarEngine:
             f"digest:midday:{day}",
             f"digest:evening:{day}",
         ]
-        gap = int(getattr(cfg, "DIGEST_GAP_SECONDS", 1500))
+        gap = int(setting("digest_gap_seconds", cfg.DIGEST_GAP_SECONDS))
         if any_push_keys_recently(digest_keys, gap):
             self._update_brief_baseline(sectors)
             return 0
@@ -634,8 +750,7 @@ class RadarEngine:
 
         as_of = now.strftime("%Y-%m-%d %H:%M")
         title, desp = format_change_brief(changes, as_of=as_of)
-        if notify_serverchan(key, title, desp):
-            log_push(brief_key, title)
+        if self._send_push(key, brief_key, title, desp, kind="brief"):
             self._update_brief_baseline(sectors)
             log.info("serverchan change brief n=%s", len(changes))
             return 1

@@ -29,6 +29,9 @@ class SettingsIn(BaseModel):
     morning_push_min_score: float | None = None
     morning_push_top_n: int | None = None
     change_brief_enabled: bool | None = None
+    digest_gap_seconds: int | None = None
+    push_daily_max: int | None = None
+    sector_blacklist: str | None = None
 
 
 @asynccontextmanager
@@ -75,6 +78,55 @@ def health() -> dict[str, Any]:
 def push_status() -> dict[str, Any]:
     """Push self-check: schedule windows, recent log, resonance backtest."""
     return engine.push_status()
+
+
+@app.get("/api/push/history")
+def push_history(
+    kind: str = Query(default=""),
+    day_from: str = Query(default=""),
+    day_to: str = Query(default=""),
+    ok: str = Query(default=""),
+    q: str = Query(default=""),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=30, ge=1, le=100),
+) -> dict[str, Any]:
+    """Query Server酱 push history with filters."""
+    return engine.query_history(
+        kind=kind,
+        day_from=day_from,
+        day_to=day_to,
+        ok=ok,
+        q=q,
+        offset=offset,
+        limit=limit,
+    )
+
+
+@app.get("/api/push/history/{push_id}")
+def push_history_one(push_id: int) -> dict[str, Any]:
+    """Return one push including full body."""
+    from news_radar.db import get_push_log
+
+    row = get_push_log(push_id)
+    if not row:
+        raise HTTPException(404, "not found")
+    return {"ok": True, "row": row}
+
+
+class PushFeedbackIn(BaseModel):
+    """Mark a historical push as useful / useless."""
+
+    feedback: str = Field(description="useful | useless | empty to clear")
+
+
+@app.post("/api/push/history/{push_id}/feedback")
+def push_feedback(push_id: int, body: PushFeedbackIn) -> dict[str, Any]:
+    """Record user feedback on a push."""
+    from news_radar.db import set_push_feedback
+
+    if not set_push_feedback(push_id, body.feedback):
+        raise HTTPException(400, "invalid feedback or missing row")
+    return {"ok": True}
 
 
 @app.get("/api/backtest/resonance")
@@ -129,11 +181,21 @@ def test_push() -> dict[str, Any]:
     key = str(s.get("serverchan_sendkey") or "").strip()
     if not key:
         raise HTTPException(400, "未配置 Server酱 SendKey")
-    ok = notify_serverchan(
+    result = notify_serverchan(
         key,
         "新闻雷达 · 测试推送",
         "这是一条测试消息。若收到，说明 SendKey 配置正确。\n\n> news-radar",
     )
-    if not ok:
-        raise HTTPException(502, "Server酱 发送失败，请检查 SendKey / 配额")
+    from news_radar.db import log_push
+
+    log_push(
+        "alert:test",
+        "新闻雷达 · 测试推送",
+        kind="alert",
+        ok=bool(result.get("ok")),
+        desp="测试推送",
+        error=str(result.get("error") or ""),
+    )
+    if not result.get("ok"):
+        raise HTTPException(502, f"Server酱 发送失败：{result.get('error') or '未知错误'}")
     return {"ok": True}

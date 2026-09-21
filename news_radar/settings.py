@@ -15,12 +15,15 @@ _DEFAULTS: dict[str, Any] = {
     "heat_window_hours": int(cfg.HEAT_WINDOW_HOURS),
     "push_score_min": float(cfg.PUSH_SCORE_MIN),
     "push_cooldown_seconds": int(cfg.PUSH_COOLDOWN_SECONDS),
+    "digest_gap_seconds": int(cfg.DIGEST_GAP_SECONDS),
+    "push_daily_max": int(cfg.PUSH_DAILY_MAX),
     "serverchan_enabled": bool(cfg.SERVERCHAN_ENABLED),
     "serverchan_sendkey": str(cfg.SERVERCHAN_SENDKEY or ""),
     "llm_enabled": bool(cfg.LLM_ENABLED),
     "morning_push_min_score": float(cfg.MORNING_PUSH_MIN_SCORE),
     "morning_push_top_n": int(cfg.MORNING_PUSH_TOP_N),
     "change_brief_enabled": bool(cfg.CHANGE_BRIEF_ENABLED),
+    "sector_blacklist": "",
 }
 
 
@@ -68,12 +71,15 @@ def _clamp(out: dict[str, Any]) -> dict[str, Any]:
     out["heat_window_hours"] = max(1, min(168, int(out["heat_window_hours"])))
     out["push_score_min"] = max(1.0, min(100.0, float(out["push_score_min"])))
     out["push_cooldown_seconds"] = max(300, min(86400, int(out["push_cooldown_seconds"])))
+    out["digest_gap_seconds"] = max(600, min(7200, int(out.get("digest_gap_seconds") or cfg.DIGEST_GAP_SECONDS)))
+    out["push_daily_max"] = max(1, min(30, int(out.get("push_daily_max") or cfg.PUSH_DAILY_MAX)))
     out["serverchan_enabled"] = bool(out["serverchan_enabled"])
     out["serverchan_sendkey"] = str(out.get("serverchan_sendkey") or "").strip()
     out["llm_enabled"] = bool(out["llm_enabled"])
     out["morning_push_min_score"] = max(0.5, min(50.0, float(out["morning_push_min_score"])))
     out["morning_push_top_n"] = max(1, min(10, int(out["morning_push_top_n"])))
     out["change_brief_enabled"] = bool(out.get("change_brief_enabled", True))
+    out["sector_blacklist"] = str(out.get("sector_blacklist") or "").strip()
     return out
 
 

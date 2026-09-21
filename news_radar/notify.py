@@ -12,11 +12,11 @@ from typing import Any
 log = logging.getLogger("news_radar.notify")
 
 
-def notify_serverchan(sendkey: str, title: str, desp: str) -> bool:
-    """POST one message to Server酱³. Return True on HTTP success."""
+def notify_serverchan(sendkey: str, title: str, desp: str) -> dict[str, Any]:
+    """POST one message to Server酱³. Return ``{ok, error}``."""
     key = str(sendkey or "").strip()
     if not key:
-        return False
+        return {"ok": False, "error": "empty sendkey"}
     url = f"https://sctapi.ftqq.com/{urllib.parse.quote(key)}.send"
     payload = urllib.parse.urlencode(
         {
@@ -36,14 +36,15 @@ def notify_serverchan(sendkey: str, title: str, desp: str) -> bool:
         try:
             data = json.loads(raw)
             if isinstance(data, dict) and data.get("code") not in (0, "0", None):
-                log.warning("serverchan reject: %s", data.get("message") or raw[:120])
-                return False
+                msg = str(data.get("message") or raw[:120])
+                log.warning("serverchan reject: %s", msg)
+                return {"ok": False, "error": msg}
         except json.JSONDecodeError:
             pass
-        return True
+        return {"ok": True, "error": ""}
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         log.warning("serverchan failed: %s", exc)
-        return False
+        return {"ok": False, "error": str(exc)}
 
 
 def format_sector_push(
@@ -121,6 +122,7 @@ def format_watch_digest(
     ]
     for i, row in enumerate(sectors, 1):
         sector = str(row.get("sector") or "")
+        theme = str(row.get("theme") or "")
         score = float(row.get("score") or 0)
         delta = float(row.get("delta") or 0)
         label = str(row.get("confirm_label") or row.get("label") or "")
@@ -129,11 +131,17 @@ def format_watch_digest(
         etfs = row.get("etfs") or []
         hint = str(row.get("action_hint") or "").strip()
         pct_s = "—" if pct is None else f"{float(pct):+.2f}%"
-        head = f"## {i}. {sector} · {label}" if label else f"## {i}. {sector}"
+        head = f"## {i}. {sector}"
+        if theme and theme != sector:
+            head += f"（{theme}）"
+        if label:
+            head += f" · {label}"
         if tone and tone != "中性":
             head += f" · {tone}"
         lines.append(head)
         lines.append(f"- 热度 `{score:.1f}` · 相对 `{delta:+.1f}` · 盘面 `{pct_s}`")
+        if row.get("bk_warn"):
+            lines.append("- ⚠ BK 未精确命中，名称模糊匹配")
         if etfs:
             lines.append(f"- ETF：{' / '.join(str(x) for x in etfs[:3])}")
         if hint:
@@ -149,8 +157,7 @@ def format_watch_digest(
         lines.append("")
     if extra_sections:
         lines.extend(extra_sections)
-        if extra_sections and not str(extra_sections[-1]).endswith("\n"):
-            lines.append("")
+        lines.append("")
     lines.append("---")
     lines.append("_news-radar · 软提示，不构成投资建议_")
     return title, "\n".join(lines)
@@ -187,3 +194,36 @@ def format_change_brief(
     lines.append("---")
     lines.append("_news-radar · 软提示，不构成投资建议_")
     return title, "\n".join(lines)
+
+
+def format_overnight_sections(hints: list[dict[str, Any]]) -> list[str]:
+    """Split overnight cues into macro / US / commodity style sections."""
+    if not hints:
+        return []
+    buckets = {
+        "宏观/利率": [],
+        "美股/情绪": [],
+        "商品": [],
+        "其他传导": [],
+    }
+    for h in hints:
+        sector = str(h.get("sector") or "")
+        note = str(h.get("note") or "")
+        etf = (h.get("etfs") or [""])[0]
+        line = f"- **{sector}**：{note}" + (f" · ETF `{etf}`" if etf else "")
+        if sector in ("大盘/宏观",):
+            buckets["宏观/利率"].append(line)
+        elif sector in ("美股映射/风险偏好", "港股科技映射", "半导体", "人工智能"):
+            buckets["美股/情绪"].append(line)
+        elif sector in ("石油石化", "有色/贵金属", "煤炭"):
+            buckets["商品"].append(line)
+        else:
+            buckets["其他传导"].append(line)
+    out = ["## 隔夜/全球 → A 股传导"]
+    for title, lines in buckets.items():
+        if not lines:
+            continue
+        out.append(f"### {title}")
+        out.extend(lines)
+    out.append("")
+    return out

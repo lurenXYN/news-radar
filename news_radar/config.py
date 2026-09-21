@@ -22,7 +22,11 @@ PUSH_SCORE_MIN = 8.0
 # Change-brief cooldown (seconds) after last brief.
 PUSH_COOLDOWN_SECONDS = 1800
 # After any 总报, wait this long before a change brief.
-DIGEST_GAP_SECONDS = 1500
+DIGEST_GAP_SECONDS = 2400
+# Max successful Server酱 pushes per calendar day (quota).
+PUSH_DAILY_MAX = 8
+# Soft sector blacklist (comma-separated names in settings).
+SECTOR_BLACKLIST: list[str] = []
 # Scheduled digests (small windows so polling can hit once/day).
 MORNING_PUSH_START = "08:55"
 MORNING_PUSH_END = "09:10"

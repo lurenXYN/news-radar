@@ -41,7 +41,7 @@ def connect() -> Iterator[sqlite3.Connection]:
 
 
 def init_db() -> None:
-    """Create tables if missing."""
+    """Create tables if missing and apply light migrations."""
     with connect() as conn:
         conn.executescript(
             """
@@ -102,6 +102,22 @@ def init_db() -> None:
             );
             """
         )
+        _migrate_push_log(conn)
+
+
+def _migrate_push_log(conn: sqlite3.Connection) -> None:
+    """Add history / feedback columns to push_log when missing."""
+    cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(push_log)").fetchall()}
+    alters = [
+        ("ok", "ALTER TABLE push_log ADD COLUMN ok INTEGER NOT NULL DEFAULT 1"),
+        ("kind", "ALTER TABLE push_log ADD COLUMN kind TEXT DEFAULT ''"),
+        ("desp", "ALTER TABLE push_log ADD COLUMN desp TEXT DEFAULT ''"),
+        ("error", "ALTER TABLE push_log ADD COLUMN error TEXT DEFAULT ''"),
+        ("feedback", "ALTER TABLE push_log ADD COLUMN feedback TEXT DEFAULT ''"),
+    ]
+    for name, sql in alters:
+        if name not in cols:
+            conn.execute(sql)
 
 
 def load_setting(key: str, default: Any = None) -> Any:
@@ -272,7 +288,7 @@ def was_pushed_recently(push_key: str, cooldown_sec: int) -> bool:
     )
     with connect() as conn:
         row = conn.execute(
-            "SELECT 1 FROM push_log WHERE push_key=? AND created_at>=? LIMIT 1",
+            "SELECT 1 FROM push_log WHERE push_key=? AND created_at>=? AND ok=1 LIMIT 1",
             (push_key, cutoff),
         ).fetchone()
     return row is not None
@@ -290,30 +306,144 @@ def any_push_keys_recently(push_keys: list[str], cooldown_sec: int) -> bool:
     with connect() as conn:
         row = conn.execute(
             f"SELECT 1 FROM push_log WHERE push_key IN ({placeholders}) "
-            "AND created_at>=? LIMIT 1",
+            "AND created_at>=? AND ok=1 LIMIT 1",
             (*keys, cutoff),
         ).fetchone()
     return row is not None
 
 
-def log_push(push_key: str, title: str) -> None:
-    """Record a successful Server酱 push for cooldown."""
+def log_push(
+    push_key: str,
+    title: str,
+    *,
+    kind: str = "",
+    ok: bool = True,
+    desp: str = "",
+    error: str = "",
+) -> int:
+    """Record a Server酱 attempt (success or failure). Return row id."""
     with connect() as conn:
-        conn.execute(
-            "INSERT INTO push_log(push_key, title, created_at) VALUES (?,?,?)",
-            (push_key, title, _now()),
+        cur = conn.execute(
+            "INSERT INTO push_log(push_key, title, created_at, ok, kind, desp, error, feedback) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (
+                push_key,
+                title,
+                _now(),
+                1 if ok else 0,
+                kind or _kind_from_key(push_key),
+                (desp or "")[:4000],
+                (error or "")[:500],
+                "",
+            ),
         )
+        return int(cur.lastrowid or 0)
+
+
+def _kind_from_key(push_key: str) -> str:
+    k = str(push_key or "")
+    if k.startswith("digest:morning"):
+        return "morning"
+    if k.startswith("digest:midday"):
+        return "midday"
+    if k.startswith("digest:evening"):
+        return "evening"
+    if k.startswith("brief:"):
+        return "brief"
+    if k.startswith("alert:"):
+        return "alert"
+    return "other"
 
 
 def list_push_log(limit: int = 30) -> list[dict[str, Any]]:
     """Return recent Server酱 push rows (newest first)."""
+    return query_push_log(limit=limit)["rows"]
+
+
+def query_push_log(
+    *,
+    kind: str = "",
+    day_from: str = "",
+    day_to: str = "",
+    ok: str = "",
+    q: str = "",
+    offset: int = 0,
+    limit: int = 30,
+) -> dict[str, Any]:
+    """Query push history with filters. ``ok``: '', '1', '0'."""
+    where: list[str] = []
+    args: list[Any] = []
+    if kind:
+        where.append("kind=?")
+        args.append(kind)
+    if day_from:
+        where.append("created_at>=?")
+        args.append(day_from[:10] + " 00:00:00")
+    if day_to:
+        where.append("created_at<=?")
+        args.append(day_to[:10] + " 23:59:59")
+    if ok in ("0", "1"):
+        where.append("ok=?")
+        args.append(int(ok))
+    if q:
+        where.append("(title LIKE ? OR push_key LIKE ? OR IFNULL(error,'') LIKE ?)")
+        like = f"%{q}%"
+        args.extend([like, like, like])
+    clause = (" WHERE " + " AND ".join(where)) if where else ""
+    limit = max(1, min(100, int(limit)))
+    offset = max(0, int(offset))
     with connect() as conn:
+        total = conn.execute(
+            f"SELECT COUNT(1) AS n FROM push_log{clause}", args
+        ).fetchone()["n"]
         rows = conn.execute(
-            "SELECT push_key, title, created_at FROM push_log "
-            "ORDER BY id DESC LIMIT ?",
-            (max(1, min(100, int(limit))),),
+            f"SELECT id, push_key, title, created_at, ok, kind, "
+            f"substr(desp,1,200) AS desp_preview, error, feedback "
+            f"FROM push_log{clause} ORDER BY id DESC LIMIT ? OFFSET ?",
+            (*args, limit, offset),
         ).fetchall()
-    return [dict(r) for r in rows]
+    return {
+        "ok": True,
+        "total": int(total or 0),
+        "offset": offset,
+        "limit": limit,
+        "rows": [dict(r) for r in rows],
+    }
+
+
+def get_push_log(push_id: int) -> dict[str, Any] | None:
+    """Return one push row including full desp body."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT id, push_key, title, created_at, ok, kind, desp, error, feedback "
+            "FROM push_log WHERE id=?",
+            (int(push_id),),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def set_push_feedback(push_id: int, feedback: str) -> bool:
+    """Mark a push as useful / useless / clear."""
+    fb = str(feedback or "").strip().lower()
+    if fb not in ("", "useful", "useless"):
+        return False
+    with connect() as conn:
+        cur = conn.execute(
+            "UPDATE push_log SET feedback=? WHERE id=?",
+            (fb, int(push_id)),
+        )
+        return cur.rowcount > 0
+
+
+def count_pushes_today(*, ok_only: bool = True) -> int:
+    """Count pushes created on the local calendar day."""
+    day = datetime.now(CN_TZ).strftime("%Y-%m-%d")
+    sql = "SELECT COUNT(1) AS n FROM push_log WHERE created_at>=? AND created_at<=?"
+    args: list[Any] = [day + " 00:00:00", day + " 23:59:59"]
+    if ok_only:
+        sql += " AND ok=1"
+    with connect() as conn:
+        return int(conn.execute(sql, args).fetchone()["n"] or 0)
 
 
 def upsert_resonance_marks(trade_date: str, rows: list[dict[str, Any]]) -> int:
@@ -391,7 +521,7 @@ def save_resonance_outcome(
 
 
 def resonance_backtest_summary(days: int = 30) -> dict[str, Any]:
-    """Aggregate settled resonance → next-day board moves."""
+    """Aggregate settled resonance → next-day board moves (overall + by confirm)."""
     cutoff = (datetime.now(CN_TZ) - timedelta(days=max(1, days))).strftime("%Y-%m-%d")
     with connect() as conn:
         rows = conn.execute(
@@ -406,23 +536,34 @@ def resonance_backtest_summary(days: int = 30) -> dict[str, Any]:
             (cutoff,),
         ).fetchall()
     items = [dict(r) for r in rows]
-    usable = [r for r in items if r.get("next_board_pct") is not None]
-    up = [r for r in usable if float(r["next_board_pct"]) > 0]
-    flat = [r for r in usable if float(r["next_board_pct"]) == 0]
-    down = [r for r in usable if float(r["next_board_pct"]) < 0]
-    avg = (
-        round(sum(float(r["next_board_pct"]) for r in usable) / len(usable), 3)
-        if usable
-        else None
-    )
+
+    def _stats(bucket: list[dict[str, Any]]) -> dict[str, Any]:
+        usable = [r for r in bucket if r.get("next_board_pct") is not None]
+        up = [r for r in usable if float(r["next_board_pct"]) > 0]
+        flat = [r for r in usable if float(r["next_board_pct"]) == 0]
+        down = [r for r in usable if float(r["next_board_pct"]) < 0]
+        avg = (
+            round(sum(float(r["next_board_pct"]) for r in usable) / len(usable), 3)
+            if usable
+            else None
+        )
+        return {
+            "n": len(usable),
+            "up": len(up),
+            "flat": len(flat),
+            "down": len(down),
+            "hit_rate": round(100.0 * len(up) / len(usable), 1) if usable else None,
+            "avg_next_pct": avg,
+        }
+
+    by_confirm: dict[str, dict[str, Any]] = {}
+    for r in items:
+        key = str(r.get("confirm") or "unknown")
+        by_confirm.setdefault(key, []).append(r)
     return {
         "ok": True,
         "days": days,
-        "n": len(usable),
-        "up": len(up),
-        "flat": len(flat),
-        "down": len(down),
-        "hit_rate": round(100.0 * len(up) / len(usable), 1) if usable else None,
-        "avg_next_pct": avg,
+        **_stats(items),
+        "by_confirm": {k: _stats(v) for k, v in by_confirm.items()},
         "rows": items[:40],
     }
