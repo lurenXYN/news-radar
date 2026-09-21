@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -26,6 +26,9 @@ class SettingsIn(BaseModel):
     push_cooldown_seconds: int | None = None
     serverchan_enabled: bool | None = None
     serverchan_sendkey: str | None = Field(default=None, description="SCT... SendKey")
+    morning_push_only: bool | None = None
+    morning_push_min_score: float | None = None
+    morning_push_top_n: int | None = None
 
 
 @asynccontextmanager
@@ -60,6 +63,12 @@ def health() -> dict[str, Any]:
 def snapshot() -> JSONResponse:
     """Latest sectors + articles."""
     return JSONResponse(engine.snapshot)
+
+
+@app.get("/api/export/sectors")
+def export_sectors(limit: int = Query(default=8, ge=1, le=30)) -> dict[str, Any]:
+    """Compact sector watchlist for 牛来 / external soft integration."""
+    return engine.export_sectors(limit=limit)
 
 
 @app.post("/api/refresh")

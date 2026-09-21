@@ -52,13 +52,21 @@ def format_sector_push(
     articles: list[dict[str, Any]],
     *,
     etfs: list[str] | None = None,
+    confirm_label: str = "",
+    board_pct: float | None = None,
+    delta: float | None = None,
 ) -> tuple[str, str]:
     """Build Server酱 title + markdown body for one hot sector."""
-    title = f"板块观察 · {sector}（热度 {score:.1f}）"
+    tag = f" · {confirm_label}" if confirm_label else ""
+    title = f"板块观察 · {sector}（热度 {score:.1f}{tag}）"
     lines = [
         f"## {sector}",
         f"- 热度分：`{score:.1f}`",
     ]
+    if delta is not None:
+        lines.append(f"- 相对热度：`{delta:+.1f}`（较上一窗口）")
+    if board_pct is not None:
+        lines.append(f"- 盘面：`{board_pct:+.2f}%`" + (f" · {confirm_label}" if confirm_label else ""))
     if etfs:
         lines.append(f"- 相关 ETF：{' / '.join(etfs)}")
     lines.append("")
@@ -77,4 +85,40 @@ def format_sector_push(
             "> 仅供观察，不构成投资建议。全球催化优先映射大 A 板块。",
         ]
     )
+    return title, "\n".join(lines)
+
+
+def format_morning_digest(sectors: list[dict[str, Any]], *, as_of: str) -> tuple[str, str]:
+    """Build one morning Server酱 digest for Top-N watch sectors."""
+    title = f"新闻雷达 · 盘前观察 {as_of[:10] if as_of else ''}".strip()
+    lines = [
+        f"# 盘前板块观察",
+        f"_更新于 {as_of or '—'}_",
+        "",
+        "优先看 **共振 / 盘面已动**；「仅新闻」只观察不追。",
+        "",
+    ]
+    for i, row in enumerate(sectors, 1):
+        sector = str(row.get("sector") or "")
+        score = float(row.get("score") or 0)
+        delta = float(row.get("delta") or 0)
+        label = str(row.get("confirm_label") or row.get("label") or "")
+        pct = row.get("board_pct")
+        etfs = row.get("etfs") or []
+        pct_s = "—" if pct is None else f"{float(pct):+.2f}%"
+        lines.append(f"## {i}. {sector} · {label}")
+        lines.append(f"- 热度 `{score:.1f}` · 相对 `{delta:+.1f}` · 盘面 `{pct_s}`")
+        if etfs:
+            lines.append(f"- ETF：{' / '.join(str(x) for x in etfs[:3])}")
+        arts = row.get("articles") or []
+        for a in arts[:2]:
+            t = str(a.get("title") or "").strip()
+            u = str(a.get("url") or "").strip()
+            if u:
+                lines.append(f"- [{t}]({u})")
+            elif t:
+                lines.append(f"- {t}")
+        lines.append("")
+    lines.append("---")
+    lines.append("_news-radar · 软提示，不构成投资建议_")
     return title, "\n".join(lines)

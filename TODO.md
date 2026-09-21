@@ -4,12 +4,13 @@ Agents: **read this file before planning or coding** under `apps/news-radar/`.
 
 ## Open
 
-- [ ] **A · 盘面确认 + 相对热度 + 早报推送** — 热度需对照板块涨跌；用较昨/较上小时的相对热度；每天盘前 Server酱 推 Top3（非全天刷屏）。
-- [ ] **B · 接到牛来作战台** — 导出 `/api/export/sectors`；牛来早报/作战页软提示接入（不改 ready/闸门）；可选 `news_radar_url` 配置。
+- （暂无）后续可增强：LLM 摘要归因开关、个股实体映射
 
 ## Done recently
 
-- [x] MVP：采集 + 词典映射 + SQLite + Server酱 + 独立仓 GitHub Actions 部署骨架
+- [x] **A · 盘面确认 + 相对热度 + 早报推送** — 东财板块对照；相对上一窗口热度；默认 08:00–09:25 Server酱 TopN。*(2026-09-21)*
+- [x] **B · 接到牛来作战台** — `/api/export/sectors`；牛来早报 bullets + 作战页软条；`news_radar_enabled` / `news_radar_url`。*(2026-09-21)*
+- [x] MVP：采集 + 词典映射 + SQLite + Server酱 + GitHub Actions 部署骨架
 
 ## Won’t do (for now)
 

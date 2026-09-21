@@ -186,8 +186,16 @@ def list_recent_articles(limit: int = 80) -> list[dict[str, Any]]:
 
 
 def sector_heat(hours: int = 24) -> list[dict[str, Any]]:
-    """Aggregate sector scores inside the heat window (A-share priority boost)."""
-    cutoff = (datetime.now(CN_TZ) - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
+    """Aggregate sector scores inside the heat window ending now."""
+    end = datetime.now(CN_TZ)
+    start = end - timedelta(hours=hours)
+    return sector_heat_between(start, end)
+
+
+def sector_heat_between(start: datetime, end: datetime) -> list[dict[str, Any]]:
+    """Aggregate sector scores for articles in [start, end)."""
+    start_s = start.strftime("%Y-%m-%d %H:%M:%S")
+    end_s = end.strftime("%Y-%m-%d %H:%M:%S")
     with connect() as conn:
         rows = conn.execute(
             """
@@ -199,10 +207,11 @@ def sector_heat(hours: int = 24) -> list[dict[str, Any]]:
             FROM article_sectors s
             JOIN articles a ON a.id = s.article_id
             WHERE COALESCE(a.published_at, a.fetched_at) >= ?
+              AND COALESCE(a.published_at, a.fetched_at) < ?
             GROUP BY s.sector
             ORDER BY raw_score DESC
             """,
-            (cutoff,),
+            (start_s, end_s),
         ).fetchall()
     out: list[dict[str, Any]] = []
     for r in rows:
@@ -211,6 +220,11 @@ def sector_heat(hours: int = 24) -> list[dict[str, Any]]:
         d["article_count"] = int(d.get("article_count") or 0)
         out.append(d)
     return out
+
+
+def heat_map(rows: list[dict[str, Any]]) -> dict[str, float]:
+    """Map sector → raw_score."""
+    return {str(r["sector"]): float(r.get("raw_score") or 0) for r in rows}
 
 
 def recent_articles_for_sector(sector: str, hours: int = 24, limit: int = 8) -> list[dict[str, Any]]:

@@ -90,31 +90,37 @@
     <div class="grid">
       <section class="card">
         <h2>可能异动板块（优先大 A）</h2>
+        <p class="meta">排序：共振 / 盘面已动优先；相对热度=较上一同等时间窗。</p>
         <table>
           <thead>
-            <tr><th>板块</th><th>热度</th><th>条数</th><th>ETF</th></tr>
+            <tr><th>板块</th><th>确认</th><th>热度</th><th>相对</th><th>盘面</th><th>ETF</th></tr>
           </thead>
           <tbody id="sectors"></tbody>
         </table>
       </section>
       <section class="card">
         <h2>Server酱 / 参数</h2>
-        <p class="meta">配置方式对齐「牛来-作战台」：SendKey（SCT…）+ 开关。也可用环境变量 <code>NEWS_RADAR_SERVERCHAN_SENDKEY</code>。</p>
+        <p class="meta">默认只在 <code>08:00–09:25</code> 推一条盘前 TopN；与牛来同款 SCT。</p>
         <label>SendKey（留空则不改）</label>
         <input type="text" id="scKey" placeholder="SCT..." autocomplete="off" />
-        <div class="chk"><input type="checkbox" id="scOn" /> 启用推送（热度达阈值时微信提醒）</div>
+        <div class="chk"><input type="checkbox" id="scOn" /> 启用推送</div>
+        <div class="chk"><input type="checkbox" id="morningOnly" checked /> 仅盘前早报推送（推荐）</div>
         <label>刷新间隔（秒）</label>
         <input type="number" id="refreshSec" min="60" max="3600" />
         <label>热度窗口（小时）</label>
         <input type="number" id="heatHours" min="1" max="168" />
-        <label>推送热度阈值</label>
-        <input type="number" id="pushMin" min="1" step="0.5" />
+        <label>盘前最低热度</label>
+        <input type="number" id="pushMin" min="0.5" step="0.5" />
         <div class="row" style="margin-top:12px">
           <button class="btn primary" id="btnSave">保存设置</button>
           <span class="meta" id="setMsg"></span>
         </div>
       </section>
     </div>
+    <section class="card" style="margin-top:14px">
+      <h2>重点观察（watch）</h2>
+      <div id="watch" class="meta">—</div>
+    </section>
     <section class="card" style="margin-top:14px">
       <h2>最近新闻</h2>
       <div id="articles"></div>
@@ -126,12 +132,13 @@
       const r = await fetch("/api/settings");
       const s = await r.json();
       document.getElementById("scOn").checked = !!s.serverchan_enabled;
+      document.getElementById("morningOnly").checked = s.morning_push_only !== false;
       document.getElementById("scKey").placeholder = s.serverchan_sendkey_set
         ? ("已保存 " + (s.serverchan_sendkey || ""))
         : "SCT...";
       document.getElementById("refreshSec").value = s.refresh_seconds;
       document.getElementById("heatHours").value = s.heat_window_hours;
-      document.getElementById("pushMin").value = s.push_score_min;
+      document.getElementById("pushMin").value = s.morning_push_min_score ?? s.push_score_min;
     }
 
     function render(snap) {
@@ -140,6 +147,7 @@
       stamp.textContent = (snap.updated_at || "—")
         + " · 抓取 " + (st.fetched || 0)
         + " · 新增 " + (st.inserted || 0)
+        + " · 板块行情 " + (st.boards || 0)
         + " · 推送 " + (st.pushed || 0)
         + (snap.ok ? "" : " · 异常");
       const tb = document.getElementById("sectors");
@@ -147,13 +155,22 @@
       (snap.sectors || []).slice(0, 20).forEach((row) => {
         const tr = document.createElement("tr");
         const etfs = (row.etfs || []).join(" ");
+        const pct = row.board_pct == null ? "—" : (Number(row.board_pct) >= 0 ? "+" : "") + Number(row.board_pct).toFixed(2) + "%";
+        const delta = (Number(row.delta || 0) >= 0 ? "+" : "") + Number(row.delta || 0).toFixed(1);
         tr.innerHTML = "<td><strong>" + esc(row.sector) + "</strong>"
           + tipArts(row.articles)
+          + "</td><td>" + esc(row.confirm_label || "—")
           + "</td><td class='score'>" + Number(row.score || 0).toFixed(1)
-          + "</td><td>" + (row.article_count || 0)
+          + "</td><td>" + delta
+          + "</td><td>" + pct
           + "</td><td class='etf'>" + esc(etfs) + "</td>";
         tb.appendChild(tr);
       });
+      const w = document.getElementById("watch");
+      const watch = snap.watch || [];
+      w.innerHTML = watch.length
+        ? watch.map((r) => esc(r.sector) + "（" + esc(r.confirm_label || "") + "）").join(" · ")
+        : "暂无重点观察";
       const box = document.getElementById("articles");
       box.innerHTML = "";
       (snap.articles || []).slice(0, 40).forEach((a) => {
@@ -196,9 +213,10 @@
     document.getElementById("btnSave").onclick = async () => {
       const body = {
         serverchan_enabled: document.getElementById("scOn").checked,
+        morning_push_only: document.getElementById("morningOnly").checked,
         refresh_seconds: Number(document.getElementById("refreshSec").value),
         heat_window_hours: Number(document.getElementById("heatHours").value),
-        push_score_min: Number(document.getElementById("pushMin").value),
+        morning_push_min_score: Number(document.getElementById("pushMin").value),
       };
       const key = document.getElementById("scKey").value.trim();
       if (key) body.serverchan_sendkey = key;

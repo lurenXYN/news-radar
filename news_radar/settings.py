@@ -18,6 +18,9 @@ _DEFAULTS: dict[str, Any] = {
     "serverchan_enabled": bool(cfg.SERVERCHAN_ENABLED),
     "serverchan_sendkey": str(cfg.SERVERCHAN_SENDKEY or ""),
     "llm_enabled": bool(cfg.LLM_ENABLED),
+    "morning_push_only": bool(cfg.MORNING_PUSH_ONLY),
+    "morning_push_min_score": float(cfg.MORNING_PUSH_MIN_SCORE),
+    "morning_push_top_n": int(cfg.MORNING_PUSH_TOP_N),
 }
 
 
@@ -65,6 +68,9 @@ def _clamp(out: dict[str, Any]) -> dict[str, Any]:
     out["serverchan_enabled"] = bool(out["serverchan_enabled"])
     out["serverchan_sendkey"] = str(out.get("serverchan_sendkey") or "").strip()
     out["llm_enabled"] = bool(out["llm_enabled"])
+    out["morning_push_only"] = bool(out.get("morning_push_only"))
+    out["morning_push_min_score"] = max(0.5, min(50.0, float(out["morning_push_min_score"])))
+    out["morning_push_top_n"] = max(1, min(10, int(out["morning_push_top_n"])))
     return out
 
 
