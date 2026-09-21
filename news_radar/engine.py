@@ -26,7 +26,7 @@ from news_radar.db import (
     sector_heat_between,
     was_pushed_recently,
 )
-from news_radar.notify import format_morning_digest, format_sector_push, notify_serverchan
+from news_radar.notify import format_morning_digest, format_watch_digest, notify_serverchan
 from news_radar.score import action_hint, etfs_for_sector, match_sectors
 from news_radar.sentiment import classify_tone
 from news_radar.settings import setting
@@ -311,32 +311,39 @@ class RadarEngine:
         return 0
 
     def _push_intraday(self, sectors: list[dict[str, Any]], *, key: str) -> int:
+        """Push one merged digest (never one message per sector)."""
         min_score = float(setting("push_score_min", cfg.PUSH_SCORE_MIN))
         cooldown = int(setting("push_cooldown_seconds", cfg.PUSH_COOLDOWN_SECONDS))
-        ok_n = 0
-        for row in sectors[:5]:
+        top_n = int(setting("morning_push_top_n", cfg.MORNING_PUSH_TOP_N))
+        picked: list[dict[str, Any]] = []
+        for row in sectors[:12]:
             if row.get("confirm") not in ("resonance", "board_lead") and not row.get("rising"):
                 continue
             score = float(row.get("score") or 0)
             if score < min_score:
                 continue
-            sector = str(row.get("sector") or "")
-            push_key = f"sector:{sector}"
-            if was_pushed_recently(push_key, cooldown):
-                continue
-            title, desp = format_sector_push(
-                sector,
-                score,
-                list(row.get("articles") or []),
-                etfs=list(row.get("etfs") or []),
-                confirm_label=str(row.get("confirm_label") or ""),
-                board_pct=row.get("board_pct"),
-                delta=row.get("delta"),
-            )
-            if notify_serverchan(key, title, desp):
-                log_push(push_key, title)
-                ok_n += 1
-        return ok_n
+            picked.append(row)
+            if len(picked) >= max(1, top_n):
+                break
+        if not picked:
+            return 0
+        names = ",".join(sorted(str(r.get("sector") or "") for r in picked))
+        push_key = f"intraday:{names}"
+        if was_pushed_recently(push_key, cooldown):
+            return 0
+        as_of = datetime.now(CN_TZ).strftime("%Y-%m-%d %H:%M")
+        title, desp = format_watch_digest(
+            picked,
+            as_of=as_of,
+            title_prefix="新闻雷达 · 板块观察",
+            heading="板块观察汇总",
+            tip="本轮合并推送（不再按板块拆条）。优先看 **共振 / 盘面已动**。",
+        )
+        if notify_serverchan(key, title, desp):
+            log_push(push_key, title)
+            log.info("serverchan intraday digest n=%s", len(picked))
+            return 1
+        return 0
 
 
 engine = RadarEngine()

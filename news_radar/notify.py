@@ -90,12 +90,32 @@ def format_sector_push(
 
 def format_morning_digest(sectors: list[dict[str, Any]], *, as_of: str) -> tuple[str, str]:
     """Build one morning Server酱 digest for Top-N watch sectors."""
-    title = f"新闻雷达 · 盘前观察 {as_of[:10] if as_of else ''}".strip()
+    return format_watch_digest(
+        sectors,
+        as_of=as_of,
+        title_prefix="新闻雷达 · 盘前观察",
+        heading="盘前板块观察",
+        tip="优先看 **共振 / 盘面已动**；「仅新闻」只观察不追。",
+    )
+
+
+def format_watch_digest(
+    sectors: list[dict[str, Any]],
+    *,
+    as_of: str,
+    title_prefix: str = "新闻雷达 · 板块观察",
+    heading: str = "板块观察汇总",
+    tip: str = "优先看 **共振 / 盘面已动**；合并推送，避免刷屏。",
+) -> tuple[str, str]:
+    """Build one Server酱 digest covering multiple sectors (merged push)."""
+    day = as_of[:10] if as_of else ""
+    n = len(sectors)
+    title = f"{title_prefix} {day} · Top{n}".strip()
     lines = [
-        f"# 盘前板块观察",
+        f"# {heading}",
         f"_更新于 {as_of or '—'}_",
         "",
-        "优先看 **共振 / 盘面已动**；「仅新闻」只观察不追。",
+        tip,
         "",
     ]
     for i, row in enumerate(sectors, 1):
@@ -103,13 +123,20 @@ def format_morning_digest(sectors: list[dict[str, Any]], *, as_of: str) -> tuple
         score = float(row.get("score") or 0)
         delta = float(row.get("delta") or 0)
         label = str(row.get("confirm_label") or row.get("label") or "")
+        tone = str(row.get("tone_label") or "")
         pct = row.get("board_pct")
         etfs = row.get("etfs") or []
+        hint = str(row.get("action_hint") or "").strip()
         pct_s = "—" if pct is None else f"{float(pct):+.2f}%"
-        lines.append(f"## {i}. {sector} · {label}")
+        head = f"## {i}. {sector} · {label}" if label else f"## {i}. {sector}"
+        if tone and tone != "中性":
+            head += f" · {tone}"
+        lines.append(head)
         lines.append(f"- 热度 `{score:.1f}` · 相对 `{delta:+.1f}` · 盘面 `{pct_s}`")
         if etfs:
             lines.append(f"- ETF：{' / '.join(str(x) for x in etfs[:3])}")
+        if hint:
+            lines.append(f"- 动作：{hint}")
         arts = row.get("articles") or []
         for a in arts[:2]:
             t = str(a.get("title") or "").strip()
