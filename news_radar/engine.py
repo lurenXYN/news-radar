@@ -13,25 +13,33 @@ from news_radar import config as cfg
 from news_radar.boards import confirm_label, fetch_board_quotes, match_board_for_sector
 from news_radar.collect import collect_all
 from news_radar.dedupe import dedupe_articles
+from news_radar.calendar import is_trading_day
 from news_radar.db import (
     any_push_keys_recently,
     heat_map,
     init_db,
     insert_article,
     link_article_sectors,
+    list_push_log,
     list_recent_articles,
+    list_unsettle_resonance_marks,
     log_push,
     purge_old_articles,
     recent_articles_for_sector,
+    resonance_backtest_summary,
+    save_resonance_outcome,
     sector_heat,
     sector_heat_between,
+    upsert_resonance_marks,
     was_pushed_recently,
 )
+from news_radar.lexicon import overnight_hints_from_text
 from news_radar.notify import (
     format_change_brief,
     format_watch_digest,
     notify_serverchan,
 )
+from news_radar.schedule import push_schedule_status
 from news_radar.score import action_hint, etfs_for_sector, match_sectors
 from news_radar.sentiment import classify_tone
 from news_radar.settings import setting
@@ -59,8 +67,8 @@ def _in_hhmm_window(now: datetime, start: str, end: str) -> bool:
 
 
 def _is_a_share_trading_session(now: datetime) -> bool:
-    """True during A-share continuous auction (weekdays only; no holiday calendar)."""
-    if now.weekday() >= 5:
+    """True during A-share continuous auction on a trading day."""
+    if not is_trading_day(now):
         return False
     minutes = now.hour * 60 + now.minute
     morning = 9 * 60 + 30 <= minutes <= 11 * 60 + 30
@@ -78,7 +86,9 @@ def _watch_fingerprint(rows: list[dict[str, Any]]) -> str:
     return ";".join(parts)
 
 
-def _pick_digest_rows(sectors: list[dict[str, Any]], *, min_score: float, top_n: int) -> list[dict[str, Any]]:
+def _pick_digest_rows(
+    sectors: list[dict[str, Any]], *, min_score: float, top_n: int
+) -> list[dict[str, Any]]:
     """Select Top-N rows worth putting in a 总报."""
     picked = [
         s
@@ -100,11 +110,19 @@ _CONFIRM_RANK = {
 }
 
 
+def _has_linked_article(row: dict[str, Any]) -> bool:
+    """True when the sector row carries at least one news URL."""
+    for a in row.get("articles") or []:
+        if str(a.get("url") or "").strip() and str(a.get("title") or "").strip():
+            return True
+    return False
+
+
 def _detect_watch_changes(
     prev: dict[str, dict[str, Any]] | None,
     cur_rows: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Return rows that newly appeared, upgraded confirm, or heated up vs baseline."""
+    """Return quality-gated changes: new / confirm upgrade / heat jump + news link."""
     if not prev:
         return []
     out: list[dict[str, Any]] = []
@@ -112,23 +130,40 @@ def _detect_watch_changes(
         sector = str(row.get("sector") or "")
         if not sector:
             continue
+        if not _has_linked_article(row):
+            continue
+        confirm = str(row.get("confirm") or "")
+        if confirm not in ("resonance", "board_lead", "news_only") and not row.get("rising"):
+            continue
         old = prev.get(sector)
         reasons: list[str] = []
         if old is None:
-            reasons.append("新进观察")
+            if confirm in ("resonance", "board_lead") or (
+                confirm == "news_only" and row.get("rising")
+            ):
+                reasons.append("新进观察")
         else:
             old_c = str(old.get("confirm") or "")
-            new_c = str(row.get("confirm") or "")
-            if _CONFIRM_RANK.get(new_c, 0) > _CONFIRM_RANK.get(old_c, 0):
-                reasons.append(f"确认升级 {old.get('confirm_label') or old_c}→{row.get('confirm_label') or new_c}")
+            new_c = confirm
+            if _CONFIRM_RANK.get(new_c, 0) > _CONFIRM_RANK.get(old_c, 0) and new_c in (
+                "resonance",
+                "board_lead",
+            ):
+                reasons.append(
+                    f"确认升级 {old.get('confirm_label') or old_c}→{row.get('confirm_label') or new_c}"
+                )
             try:
                 d0 = float(old.get("delta") or 0)
                 d1 = float(row.get("delta") or 0)
-                if d1 - d0 >= 2.0:
+                if d1 - d0 >= 2.5 and row.get("rising"):
                     reasons.append(f"相对热度↑ {d0:+.0f}→{d1:+.0f}")
             except (TypeError, ValueError):
                 pass
-            if not old.get("rising") and row.get("rising"):
+            if not old.get("rising") and row.get("rising") and confirm in (
+                "resonance",
+                "board_lead",
+                "news_only",
+            ):
                 reasons.append("转为升温")
         if not reasons:
             continue
@@ -295,19 +330,25 @@ class RadarEngine:
 
             pushed = 0
             try:
-                pushed = self._maybe_push(sectors, now=now)
+                pushed = self._maybe_push(sectors, now=now, boards=boards)
             except Exception as exc:
                 log.exception("push failed")
                 warnings.append(f"push: {exc}")
+            try:
+                self._settle_resonance(boards, now=now)
+            except Exception as exc:
+                warnings.append(f"resonance: {exc}")
 
             stamp = now.strftime("%Y-%m-%d %H:%M:%S")
             self.snapshot = {
                 "ok": True,
                 "updated_at": stamp,
+                "trading_day": is_trading_day(now),
                 "sectors": sectors[:30],
                 "watch": watch,
                 "articles": list_recent_articles(60),
                 "warnings": warnings,
+                "push_schedule": push_schedule_status(now),
                 "stats": {
                     "fetched": len(rows) + deduped,
                     "inserted": new_n,
@@ -361,12 +402,21 @@ class RadarEngine:
             "stats": snap.get("stats") or {},
         }
 
-    def _maybe_push(self, sectors: list[dict[str, Any]], *, now: datetime) -> int:
-        """Run scheduled digests + trading-hours change brief."""
+    def _maybe_push(
+        self,
+        sectors: list[dict[str, Any]],
+        *,
+        now: datetime,
+        boards: list[dict[str, Any]] | None = None,
+    ) -> int:
+        """Run scheduled digests + trading-hours change brief (mute on holidays)."""
         if not bool(setting("serverchan_enabled", False)):
             return 0
         key = str(setting("serverchan_sendkey", "") or "").strip()
         if not key:
+            return 0
+        if not is_trading_day(now):
+            self._update_brief_baseline(sectors)
             return 0
         sent = 0
         sent += self._push_scheduled_digest(
@@ -400,12 +450,24 @@ class RadarEngine:
             end=cfg.EVENING_PUSH_END,
             title_prefix="新闻雷达 · 晚间总报",
             heading="晚间总报",
-            tip="当日催化收束；明日可盯线索（软提示）。",
+            tip="当日催化收束；含隔夜/全球 → A 股传导线索（软提示）。",
+            include_overnight=True,
         )
         if bool(setting("change_brief_enabled", cfg.CHANGE_BRIEF_ENABLED)):
             sent += self._push_change_brief(sectors, key=key, now=now)
         else:
             self._update_brief_baseline(sectors)
+        # Mark resonance after midday for next-day settle (also refresh at evening).
+        if _in_hhmm_window(now, cfg.MIDDAY_PUSH_START, "15:10") or _in_hhmm_window(
+            now, cfg.EVENING_PUSH_START, cfg.EVENING_PUSH_END
+        ):
+            marks = [
+                s
+                for s in sectors
+                if s.get("confirm") in ("resonance", "board_lead")
+            ][:8]
+            if marks:
+                upsert_resonance_marks(now.strftime("%Y-%m-%d"), marks)
         return sent
 
     def _push_scheduled_digest(
@@ -420,6 +482,7 @@ class RadarEngine:
         title_prefix: str,
         heading: str,
         tip: str,
+        include_overnight: bool = False,
     ) -> int:
         """Push at most one digest per kind per calendar day inside its window."""
         if not _in_hhmm_window(now, start, end):
@@ -431,15 +494,36 @@ class RadarEngine:
         min_score = float(setting("morning_push_min_score", cfg.MORNING_PUSH_MIN_SCORE))
         top_n = int(setting("morning_push_top_n", cfg.MORNING_PUSH_TOP_N))
         picked = _pick_digest_rows(sectors, min_score=min_score, top_n=top_n)
-        if not picked:
+        if not picked and not include_overnight:
+            return 0
+        extra: list[str] = []
+        if include_overnight:
+            blob = "\n".join(
+                str(a.get("title") or "") for a in list_recent_articles(40)
+            )
+            for s in sectors[:12]:
+                for a in (s.get("articles") or [])[:2]:
+                    blob += "\n" + str(a.get("title") or "")
+            hints = overnight_hints_from_text(blob, limit=5)
+            if hints:
+                extra.append("## 隔夜/全球 → A 股传导")
+                for h in hints:
+                    etf = (h.get("etfs") or [""])[0]
+                    extra.append(
+                        f"- **{h.get('sector')}**：{h.get('note')}"
+                        + (f" · ETF `{etf}`" if etf else "")
+                    )
+                extra.append("")
+        if not picked and not extra:
             return 0
         as_of = now.strftime("%Y-%m-%d %H:%M")
         title, desp = format_watch_digest(
-            picked,
+            picked or [],
             as_of=as_of,
             title_prefix=title_prefix,
             heading=heading,
             tip=tip,
+            extra_sections=extra or None,
         )
         if notify_serverchan(key, title, desp):
             log_push(push_key, title)
@@ -447,6 +531,52 @@ class RadarEngine:
             log.info("serverchan %s digest n=%s", kind, len(picked))
             return 1
         return 0
+
+    def _settle_resonance(
+        self, boards: list[dict[str, Any]], *, now: datetime
+    ) -> None:
+        """Fill next-day board pct for prior resonance marks (once per mark)."""
+        if not is_trading_day(now):
+            return
+        # Settle after open so day-move is meaningful.
+        if now.hour * 60 + now.minute < 10 * 60:
+            return
+        today = now.strftime("%Y-%m-%d")
+        pending = list_unsettle_resonance_marks(today)
+        if not pending or not boards:
+            return
+        by_bk = {str(b.get("bk") or "").upper(): b for b in boards}
+        by_name = {str(b.get("name") or ""): b for b in boards}
+        for m in pending:
+            bk = str(m.get("board_bk") or "").upper()
+            sector = str(m.get("sector") or "")
+            hit = by_bk.get(bk) if bk else None
+            if hit is None:
+                for name, b in by_name.items():
+                    if sector and sector.split("/")[0] in name:
+                        hit = b
+                        break
+            pct = float(hit["pct"]) if hit and hit.get("pct") is not None else None
+            save_resonance_outcome(
+                str(m["trade_date"]),
+                sector,
+                next_date=today,
+                next_board_pct=pct,
+            )
+
+    def push_status(self) -> dict[str, Any]:
+        """UI/API payload: schedule + recent pushes + light backtest."""
+        now = datetime.now(CN_TZ)
+        return {
+            "ok": True,
+            "schedule": push_schedule_status(now),
+            "recent": list_push_log(20),
+            "backtest": resonance_backtest_summary(30),
+            "serverchan_enabled": bool(setting("serverchan_enabled", False)),
+            "change_brief_enabled": bool(
+                setting("change_brief_enabled", cfg.CHANGE_BRIEF_ENABLED)
+            ),
+        }
 
     def _update_brief_baseline(self, sectors: list[dict[str, Any]]) -> None:
         """Refresh change-brief baseline from current watch-like rows."""

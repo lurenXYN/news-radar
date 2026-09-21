@@ -106,6 +106,7 @@ def format_watch_digest(
     title_prefix: str = "新闻雷达 · 板块观察",
     heading: str = "板块观察汇总",
     tip: str = "优先看 **共振 / 盘面已动**；合并推送，避免刷屏。",
+    extra_sections: list[str] | None = None,
 ) -> tuple[str, str]:
     """Build one Server酱 digest covering multiple sectors (merged push)."""
     day = as_of[:10] if as_of else ""
@@ -146,6 +147,10 @@ def format_watch_digest(
             elif t:
                 lines.append(f"- {t}")
         lines.append("")
+    if extra_sections:
+        lines.extend(extra_sections)
+        if extra_sections and not str(extra_sections[-1]).endswith("\n"):
+            lines.append("")
     lines.append("---")
     lines.append("_news-radar · 软提示，不构成投资建议_")
     return title, "\n".join(lines)

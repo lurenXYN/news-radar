@@ -118,6 +118,15 @@
       </section>
     </div>
     <section class="card" style="margin-top:14px">
+      <h2>推送自检</h2>
+      <p class="meta" id="pushSchedule">加载中…</p>
+      <p class="meta" id="pushBacktest"></p>
+      <table>
+        <thead><tr><th>时间</th><th>类型</th><th>标题</th></tr></thead>
+        <tbody id="pushLog"></tbody>
+      </table>
+    </section>
+    <section class="card" style="margin-top:14px">
       <h2>重点观察（watch）</h2>
       <div id="watch" class="meta">—</div>
     </section>
@@ -207,9 +216,53 @@
         .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
     }
 
+    async function loadPushStatus() {
+      try {
+        const r = await fetch("/api/push/status");
+        const d = await r.json();
+        const sch = d.schedule || {};
+        const next = sch.next || {};
+        const today = (sch.today || []).map((w) => {
+          const tag = ({ open: "窗口中", upcoming: "待发", passed: "已过", skip_holiday: "休市跳过" })[w.state] || w.state;
+          return w.label + " " + w.start + "（" + tag + "）";
+        }).join(" · ");
+        document.getElementById("pushSchedule").textContent =
+          (sch.trading_day ? "今日交易日" : "今日休市（不推送）")
+          + (next.at ? " · 下一总报 " + next.label + " " + next.at : "")
+          + (today ? " · " + today : "");
+        const bt = d.backtest || {};
+        document.getElementById("pushBacktest").textContent = bt.n
+          ? ("共振次日样本 n=" + bt.n
+            + " · 上涨占比 " + (bt.hit_rate != null ? bt.hit_rate + "%" : "—")
+            + " · 次日均涨跌 " + (bt.avg_next_pct != null ? (bt.avg_next_pct >= 0 ? "+" : "") + bt.avg_next_pct + "%" : "—")
+            + "（样本少时仅供参考）")
+          : "共振次日回测：样本不足（交易日自动记共振，次日结算）";
+        const tb = document.getElementById("pushLog");
+        tb.innerHTML = "";
+        (d.recent || []).slice(0, 12).forEach((row) => {
+          const tr = document.createElement("tr");
+          const k = String(row.push_key || "");
+          let kind = "其他";
+          if (k.startsWith("digest:morning")) kind = "盘前总报";
+          else if (k.startsWith("digest:midday")) kind = "盘中总报";
+          else if (k.startsWith("digest:evening")) kind = "晚间总报";
+          else if (k.startsWith("brief:")) kind = "变化简报";
+          tr.innerHTML = "<td class='meta'>" + esc(row.created_at) + "</td><td>" + esc(kind)
+            + "</td><td>" + esc(row.title) + "</td>";
+          tb.appendChild(tr);
+        });
+        if (!(d.recent || []).length) {
+          tb.innerHTML = "<tr><td colspan='3' class='meta'>暂无推送记录</td></tr>";
+        }
+      } catch (e) {
+        document.getElementById("pushSchedule").textContent = "推送自检加载失败";
+      }
+    }
+
     async function tick() {
       const r = await fetch("/api/snapshot");
       render(await r.json());
+      loadPushStatus();
     }
 
     document.getElementById("btnRefresh").onclick = async () => {

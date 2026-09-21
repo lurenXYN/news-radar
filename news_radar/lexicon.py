@@ -228,3 +228,90 @@ SECTOR_RULES: list[dict[str, Any]] = [
         ],
     },
 ]
+
+# Company / ticker needles → A-share sector (soft entity map).
+ENTITY_MAP: list[dict[str, Any]] = [
+    {"names": ["宁德时代", "宁德"], "sector": "新能源/锂电", "weight": 1.25},
+    {"names": ["比亚迪"], "sector": "新能源/锂电", "weight": 1.2},
+    {"names": ["隆基", "通威", "阳光电源"], "sector": "新能源/锂电", "weight": 1.1},
+    {"names": ["中芯国际", "寒武纪", "韦尔股份", "北方华创"], "sector": "半导体", "weight": 1.25},
+    {"names": ["茅台", "五粮液", "泸州老窖"], "sector": "白酒/消费", "weight": 1.2},
+    {"names": ["恒瑞", "药明康德", "百济"], "sector": "创新药/医药", "weight": 1.15},
+    {"names": ["中国平安", "招商银行", "工商银行"], "sector": "银行", "weight": 1.05},
+    {"names": ["中信证券", "东方财富"], "sector": "证券", "weight": 1.1},
+    {"names": ["中国船舶", "航发动力", "中航沈飞"], "sector": "军工", "weight": 1.15},
+    {"names": ["紫金矿业", "山东黄金"], "sector": "有色/贵金属", "weight": 1.1},
+    {"names": ["中国石油", "中国海油", "中国石化"], "sector": "石油石化", "weight": 1.1},
+    {"names": ["腾讯", "阿里", "美团", "小米集团"], "sector": "港股科技映射", "weight": 1.05},
+    {"names": ["英伟达", "NVIDIA", "台积电", "TSMC"], "sector": "半导体", "weight": 1.1},
+]
+
+# Overnight / global cue → A-share transmission note for evening digest.
+OVERNIGHT_CHANNELS: list[dict[str, Any]] = [
+    {
+        "needles": ["美联储", "Fed", "降息", "加息", "非农", "CPI"],
+        "sector": "大盘/宏观",
+        "note": "利率/通胀预期 → 风险偏好与券商/红利",
+    },
+    {
+        "needles": ["纳斯达克", "纳指", "美股", "英伟达", "NVIDIA", "科技股"],
+        "sector": "美股映射/风险偏好",
+        "note": "美股科技 → A 股半导体/AI 情绪",
+    },
+    {
+        "needles": ["原油", "油价", "OPEC", "布伦特"],
+        "sector": "石油石化",
+        "note": "油价波动 → 石油石化 / 通胀预期",
+    },
+    {
+        "needles": ["黄金", "金价", "COMEX"],
+        "sector": "有色/贵金属",
+        "note": "金价 → 贵金属 / 避险",
+    },
+    {
+        "needles": ["铜价", "伦铜", "有色"],
+        "sector": "有色/贵金属",
+        "note": "工业金属 → 有色",
+    },
+    {
+        "needles": ["港股", "恒生", "南向"],
+        "sector": "港股科技映射",
+        "note": "港股科技 → 互联网/软件映射",
+    },
+    {
+        "needles": ["芯片", "出口管制", "实体清单", "制裁"],
+        "sector": "半导体",
+        "note": "出口管制叙事 → 半导体",
+    },
+]
+
+
+def overnight_hints_from_text(text: str, *, limit: int = 5) -> list[dict[str, Any]]:
+    """Extract overnight transmission cues from recent headline text."""
+    blob = text or ""
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for ch in OVERNIGHT_CHANNELS:
+        if any(n and n in blob for n in ch.get("needles") or []):
+            sector = str(ch["sector"])
+            if sector in seen:
+                continue
+            seen.add(sector)
+            out.append(
+                {
+                    "sector": sector,
+                    "note": ch.get("note") or "",
+                    "etfs": etfs_for_sector_name(sector),
+                }
+            )
+        if len(out) >= limit:
+            break
+    return out
+
+
+def etfs_for_sector_name(sector: str) -> list[str]:
+    """Lookup ETF list by sector name."""
+    for rule in SECTOR_RULES:
+        if rule.get("sector") == sector:
+            return list(rule.get("etfs") or [])
+    return []

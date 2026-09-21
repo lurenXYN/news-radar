@@ -61,6 +61,7 @@ def health() -> dict[str, Any]:
     return {
         "ok": True,
         "updated_at": snap.get("updated_at"),
+        "trading_day": snap.get("trading_day"),
         "sectors": len(snap.get("sectors") or []),
         "watch": len(snap.get("watch") or []),
         "fetched": st.get("fetched"),
@@ -68,6 +69,20 @@ def health() -> dict[str, Any]:
         "deduped": st.get("deduped"),
         "boards": st.get("boards"),
     }
+
+
+@app.get("/api/push/status")
+def push_status() -> dict[str, Any]:
+    """Push self-check: schedule windows, recent log, resonance backtest."""
+    return engine.push_status()
+
+
+@app.get("/api/backtest/resonance")
+def backtest_resonance(days: int = Query(default=30, ge=5, le=120)) -> dict[str, Any]:
+    """Resonance → next-day board move summary."""
+    from news_radar.db import resonance_backtest_summary
+
+    return resonance_backtest_summary(days)
 
 
 @app.get("/api/snapshot")

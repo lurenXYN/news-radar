@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from news_radar.lexicon import BOARD_BK, SECTOR_RULES
+from news_radar.lexicon import BOARD_BK, ENTITY_MAP, SECTOR_RULES
 from news_radar.sentiment import classify_tone
 
 
 def match_sectors(title: str, summary: str = "") -> list[dict[str, Any]]:
-    """Return unique sector hits with keyword, tone, and weight."""
+    """Return unique sector hits with keyword, tone, entity, and weight."""
     text = f"{title or ''}\n{summary or ''}"
     tone = classify_tone(title, summary)
     hits: list[dict[str, Any]] = []
@@ -42,8 +42,36 @@ def match_sectors(title: str, summary: str = "") -> list[dict[str, Any]]:
                     "priority": priority,
                     "tone": tone.get("tone"),
                     "tone_label": tone.get("label"),
+                    "via": "keyword",
                 }
             )
+    for ent in ENTITY_MAP:
+        names = list(ent.get("names") or [])
+        hit_name = next((n for n in names if n and n in text), None)
+        if not hit_name:
+            continue
+        sector = str(ent.get("sector") or "")
+        if not sector:
+            continue
+        key = f"{sector}|entity:{hit_name}"
+        if key in seen:
+            continue
+        seen.add(key)
+        weight = float(ent.get("weight") or 1.2) * float(tone.get("mult") or 1.0)
+        etfs = etfs_for_sector(sector)
+        hits.append(
+            {
+                "sector": sector,
+                "keyword": hit_name,
+                "weight": round(weight, 3),
+                "etfs": etfs,
+                "bks": list(BOARD_BK.get(sector) or []),
+                "priority": "A",
+                "tone": tone.get("tone"),
+                "tone_label": tone.get("label"),
+                "via": "entity",
+            }
+        )
     return hits
 
 

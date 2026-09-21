@@ -81,6 +81,25 @@ def init_db() -> None:
                 created_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_push_key ON push_log(push_key, created_at);
+
+            CREATE TABLE IF NOT EXISTS resonance_mark (
+                trade_date TEXT NOT NULL,
+                sector TEXT NOT NULL,
+                confirm TEXT,
+                board_bk TEXT,
+                board_pct REAL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (trade_date, sector)
+            );
+
+            CREATE TABLE IF NOT EXISTS resonance_outcome (
+                trade_date TEXT NOT NULL,
+                sector TEXT NOT NULL,
+                next_date TEXT NOT NULL,
+                next_board_pct REAL,
+                settled_at TEXT NOT NULL,
+                PRIMARY KEY (trade_date, sector)
+            );
             """
         )
 
@@ -284,3 +303,126 @@ def log_push(push_key: str, title: str) -> None:
             "INSERT INTO push_log(push_key, title, created_at) VALUES (?,?,?)",
             (push_key, title, _now()),
         )
+
+
+def list_push_log(limit: int = 30) -> list[dict[str, Any]]:
+    """Return recent Server酱 push rows (newest first)."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT push_key, title, created_at FROM push_log "
+            "ORDER BY id DESC LIMIT ?",
+            (max(1, min(100, int(limit))),),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def upsert_resonance_marks(trade_date: str, rows: list[dict[str, Any]]) -> int:
+    """Persist today's resonance / board-lead marks for next-day settle."""
+    if not rows:
+        return 0
+    n = 0
+    stamp = _now()
+    with connect() as conn:
+        for r in rows:
+            sector = str(r.get("sector") or "").strip()
+            if not sector:
+                continue
+            conn.execute(
+                """
+                INSERT INTO resonance_mark(trade_date, sector, confirm, board_bk, board_pct, created_at)
+                VALUES (?,?,?,?,?,?)
+                ON CONFLICT(trade_date, sector) DO UPDATE SET
+                    confirm=excluded.confirm,
+                    board_bk=excluded.board_bk,
+                    board_pct=excluded.board_pct,
+                    created_at=excluded.created_at
+                """,
+                (
+                    trade_date,
+                    sector,
+                    str(r.get("confirm") or ""),
+                    str(r.get("board_bk") or ""),
+                    r.get("board_pct"),
+                    stamp,
+                ),
+            )
+            n += 1
+    return n
+
+
+def list_unsettle_resonance_marks(before_date: str) -> list[dict[str, Any]]:
+    """Return marks strictly before ``before_date`` that lack an outcome row."""
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT m.trade_date, m.sector, m.confirm, m.board_bk, m.board_pct
+            FROM resonance_mark m
+            LEFT JOIN resonance_outcome o
+              ON o.trade_date = m.trade_date AND o.sector = m.sector
+            WHERE m.trade_date < ? AND o.sector IS NULL
+            ORDER BY m.trade_date DESC
+            LIMIT 80
+            """,
+            (before_date,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def save_resonance_outcome(
+    trade_date: str,
+    sector: str,
+    *,
+    next_date: str,
+    next_board_pct: float | None,
+) -> None:
+    """Store next-session day-move for one resonance mark."""
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO resonance_outcome(trade_date, sector, next_date, next_board_pct, settled_at)
+            VALUES (?,?,?,?,?)
+            ON CONFLICT(trade_date, sector) DO UPDATE SET
+                next_date=excluded.next_date,
+                next_board_pct=excluded.next_board_pct,
+                settled_at=excluded.settled_at
+            """,
+            (trade_date, sector, next_date, next_board_pct, _now()),
+        )
+
+
+def resonance_backtest_summary(days: int = 30) -> dict[str, Any]:
+    """Aggregate settled resonance → next-day board moves."""
+    cutoff = (datetime.now(CN_TZ) - timedelta(days=max(1, days))).strftime("%Y-%m-%d")
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT o.trade_date, o.sector, o.next_date, o.next_board_pct, m.confirm
+            FROM resonance_outcome o
+            LEFT JOIN resonance_mark m
+              ON m.trade_date = o.trade_date AND m.sector = o.sector
+            WHERE o.trade_date >= ?
+            ORDER BY o.trade_date DESC
+            """,
+            (cutoff,),
+        ).fetchall()
+    items = [dict(r) for r in rows]
+    usable = [r for r in items if r.get("next_board_pct") is not None]
+    up = [r for r in usable if float(r["next_board_pct"]) > 0]
+    flat = [r for r in usable if float(r["next_board_pct"]) == 0]
+    down = [r for r in usable if float(r["next_board_pct"]) < 0]
+    avg = (
+        round(sum(float(r["next_board_pct"]) for r in usable) / len(usable), 3)
+        if usable
+        else None
+    )
+    return {
+        "ok": True,
+        "days": days,
+        "n": len(usable),
+        "up": len(up),
+        "flat": len(flat),
+        "down": len(down),
+        "hit_rate": round(100.0 * len(up) / len(usable), 1) if usable else None,
+        "avg_next_pct": avg,
+        "rows": items[:40],
+    }
