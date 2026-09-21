@@ -8,8 +8,9 @@ Agents: **read this file before planning or coding** under `apps/news-radar/`.
 
 ## Done recently
 
+- [x] **推送时刻表** — 09:00 盘前总报 / 13:00 盘中总报 / 交易时段变化简报(≥30min) / 21:00 晚间总报。*(2026-09-21)*
 - [x] **1–8 优化** — 利空降权；去洗稿；BK 映射；源加量（东财多栏目+财联社+新浪）；导出 tone/action_hint；牛来软条可点 / 主线对照 / 盘前清单 / 健康状态 / 参数说明；`news_radar_enabled` 默认关。*(2026-09-21)*
-- [x] **A · 盘面确认 + 相对热度 + 早报推送** — 东财板块对照；相对上一窗口热度；默认 08:00–09:25 Server酱 TopN。*(2026-09-21)*
+- [x] **A · 盘面确认 + 相对热度 + 早报推送** — 东财板块对照；相对上一窗口热度；Server酱总报。*(2026-09-21)*
 - [x] **B · 接到牛来作战台** — `/api/export/sectors`；牛来早报 bullets + 作战页软条；`news_radar_enabled` / `news_radar_url`。*(2026-09-21)*
 - [x] MVP：采集 + 词典映射 + SQLite + Server酱 + GitHub Actions 部署骨架
 

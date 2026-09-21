@@ -100,16 +100,16 @@
       </section>
       <section class="card">
         <h2>Server酱 / 参数</h2>
-        <p class="meta">默认只在 <code>08:00–09:25</code> 推一条盘前 TopN；关掉「仅盘前」时盘中也只推<strong>一条汇总</strong>（不再按板块拆条）。</p>
+        <p class="meta">推送时刻：<code>09:00</code> 盘前总报 · <code>13:00</code> 盘中总报 · 交易时段变化简报（有变化且≥30分钟）· <code>21:00</code> 晚间总报。均为合并一条。</p>
         <label>SendKey（留空则不改）</label>
         <input type="text" id="scKey" placeholder="SCT..." autocomplete="off" />
         <div class="chk"><input type="checkbox" id="scOn" /> 启用推送</div>
-        <div class="chk"><input type="checkbox" id="morningOnly" checked /> 仅盘前早报推送（推荐）</div>
+        <div class="chk"><input type="checkbox" id="changeBrief" checked /> 交易时段变化简报</div>
         <label>刷新间隔（秒）</label>
         <input type="number" id="refreshSec" min="60" max="3600" />
         <label>热度窗口（小时）</label>
         <input type="number" id="heatHours" min="1" max="168" />
-        <label>盘前最低热度</label>
+        <label>总报最低热度</label>
         <input type="number" id="pushMin" min="0.5" step="0.5" />
         <div class="row" style="margin-top:12px">
           <button class="btn primary" id="btnSave">保存设置</button>
@@ -132,7 +132,7 @@
       const r = await fetch("/api/settings");
       const s = await r.json();
       document.getElementById("scOn").checked = !!s.serverchan_enabled;
-      document.getElementById("morningOnly").checked = s.morning_push_only !== false;
+      document.getElementById("changeBrief").checked = s.change_brief_enabled !== false;
       document.getElementById("scKey").placeholder = s.serverchan_sendkey_set
         ? ("已保存 " + (s.serverchan_sendkey || ""))
         : "SCT...";
@@ -220,7 +220,7 @@
     document.getElementById("btnSave").onclick = async () => {
       const body = {
         serverchan_enabled: document.getElementById("scOn").checked,
-        morning_push_only: document.getElementById("morningOnly").checked,
+        change_brief_enabled: document.getElementById("changeBrief").checked,
         refresh_seconds: Number(document.getElementById("refreshSec").value),
         heat_window_hours: Number(document.getElementById("heatHours").value),
         morning_push_min_score: Number(document.getElementById("pushMin").value),

@@ -18,9 +18,9 @@ _DEFAULTS: dict[str, Any] = {
     "serverchan_enabled": bool(cfg.SERVERCHAN_ENABLED),
     "serverchan_sendkey": str(cfg.SERVERCHAN_SENDKEY or ""),
     "llm_enabled": bool(cfg.LLM_ENABLED),
-    "morning_push_only": bool(cfg.MORNING_PUSH_ONLY),
     "morning_push_min_score": float(cfg.MORNING_PUSH_MIN_SCORE),
     "morning_push_top_n": int(cfg.MORNING_PUSH_TOP_N),
+    "change_brief_enabled": bool(cfg.CHANGE_BRIEF_ENABLED),
 }
 
 
@@ -34,6 +34,9 @@ def get_settings(*, refresh: bool = False) -> dict[str, Any]:
         stored = {}
     out = dict(_DEFAULTS)
     out.update({k: stored[k] for k in _DEFAULTS if k in stored})
+    # Old installs used morning_push_only; map once when new key absent.
+    if "change_brief_enabled" not in stored and "morning_push_only" in stored:
+        out["change_brief_enabled"] = not bool(stored.get("morning_push_only"))
     env_key = os.environ.get("NEWS_RADAR_SERVERCHAN_SENDKEY", "").strip()
     if env_key:
         out["serverchan_sendkey"] = env_key
@@ -68,9 +71,9 @@ def _clamp(out: dict[str, Any]) -> dict[str, Any]:
     out["serverchan_enabled"] = bool(out["serverchan_enabled"])
     out["serverchan_sendkey"] = str(out.get("serverchan_sendkey") or "").strip()
     out["llm_enabled"] = bool(out["llm_enabled"])
-    out["morning_push_only"] = bool(out.get("morning_push_only"))
     out["morning_push_min_score"] = max(0.5, min(50.0, float(out["morning_push_min_score"])))
     out["morning_push_top_n"] = max(1, min(10, int(out["morning_push_top_n"])))
+    out["change_brief_enabled"] = bool(out.get("change_brief_enabled", True))
     return out
 
 

@@ -17,16 +17,25 @@ REFRESH_SECONDS = 300
 ARTICLE_RETENTION_DAYS = 14
 # Heat window for sector ranking (hours).
 HEAT_WINDOW_HOURS = 24
-# Minimum sector score before Server酱 push (intraday; morning uses morning_push_min).
+# Minimum sector score before change-brief / legacy filters.
 PUSH_SCORE_MIN = 8.0
-# Cooldown between identical sector push keys (seconds) — used only if morning_only is off.
-PUSH_COOLDOWN_SECONDS = 3600
-# Prefer one Server酱 digest in the morning window instead of per-sector spam.
-MORNING_PUSH_ONLY = True
-MORNING_PUSH_START = "08:00"
-MORNING_PUSH_END = "09:25"
+# Change-brief cooldown (seconds) after last brief.
+PUSH_COOLDOWN_SECONDS = 1800
+# After any 总报, wait this long before a change brief.
+DIGEST_GAP_SECONDS = 1500
+# Scheduled digests (small windows so polling can hit once/day).
+MORNING_PUSH_START = "08:55"
+MORNING_PUSH_END = "09:10"
+MIDDAY_PUSH_START = "12:55"
+MIDDAY_PUSH_END = "13:10"
+EVENING_PUSH_START = "20:55"
+EVENING_PUSH_END = "21:15"
 MORNING_PUSH_MIN_SCORE = 3.0
 MORNING_PUSH_TOP_N = 3
+# Enable trading-hours change brief (有变化才推).
+CHANGE_BRIEF_ENABLED = True
+# Deprecated alias kept for old settings rows; ignored by new schedule.
+MORNING_PUSH_ONLY = False
 # Relative heat: compare current window vs the previous equal window.
 REL_HEAT_MIN_DELTA = 1.5
 # Board day-move threshold (pct) to call 「共振」.

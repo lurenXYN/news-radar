@@ -26,9 +26,9 @@ class SettingsIn(BaseModel):
     push_cooldown_seconds: int | None = None
     serverchan_enabled: bool | None = None
     serverchan_sendkey: str | None = Field(default=None, description="SCT... SendKey")
-    morning_push_only: bool | None = None
     morning_push_min_score: float | None = None
     morning_push_top_n: int | None = None
+    change_brief_enabled: bool | None = None
 
 
 @asynccontextmanager

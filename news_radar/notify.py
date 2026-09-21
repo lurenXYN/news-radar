@@ -149,3 +149,36 @@ def format_watch_digest(
     lines.append("---")
     lines.append("_news-radar · 软提示，不构成投资建议_")
     return title, "\n".join(lines)
+
+
+def format_change_brief(
+    changes: list[dict[str, Any]], *, as_of: str
+) -> tuple[str, str]:
+    """Build a short trading-hours change brief (not a full digest)."""
+    n = len(changes)
+    title = f"新闻雷达 · 本小时变化 {n}"
+    lines = [
+        "# 交易时段变化简报",
+        f"_更新于 {as_of or '—'}_",
+        "",
+        "仅列出相对上次观察有变化的板块（有变化才推 · ≥30 分钟冷却）。",
+        "",
+    ]
+    for i, row in enumerate(changes, 1):
+        sector = str(row.get("sector") or "")
+        reason = str(row.get("change_reason") or "有变化")
+        label = str(row.get("confirm_label") or row.get("label") or "")
+        score = float(row.get("score") or 0)
+        delta = float(row.get("delta") or 0)
+        pct = row.get("board_pct")
+        pct_s = "—" if pct is None else f"{float(pct):+.2f}%"
+        lines.append(f"## {i}. {sector}" + (f" · {label}" if label else ""))
+        lines.append(f"- 变化：{reason}")
+        lines.append(f"- 热度 `{score:.1f}` · 相对 `{delta:+.1f}` · 盘面 `{pct_s}`")
+        etfs = row.get("etfs") or []
+        if etfs:
+            lines.append(f"- ETF：{' / '.join(str(x) for x in etfs[:2])}")
+        lines.append("")
+    lines.append("---")
+    lines.append("_news-radar · 软提示，不构成投资建议_")
+    return title, "\n".join(lines)

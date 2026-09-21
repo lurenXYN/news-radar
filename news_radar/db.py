@@ -259,6 +259,24 @@ def was_pushed_recently(push_key: str, cooldown_sec: int) -> bool:
     return row is not None
 
 
+def any_push_keys_recently(push_keys: list[str], cooldown_sec: int) -> bool:
+    """Return True if any of the keys was pushed inside the cooldown window."""
+    keys = [str(k) for k in push_keys if k]
+    if not keys:
+        return False
+    cutoff = (datetime.now(CN_TZ) - timedelta(seconds=cooldown_sec)).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+    placeholders = ",".join("?" for _ in keys)
+    with connect() as conn:
+        row = conn.execute(
+            f"SELECT 1 FROM push_log WHERE push_key IN ({placeholders}) "
+            "AND created_at>=? LIMIT 1",
+            (*keys, cutoff),
+        ).fetchone()
+    return row is not None
+
+
 def log_push(push_key: str, title: str) -> None:
     """Record a successful Server酱 push for cooldown."""
     with connect() as conn:
