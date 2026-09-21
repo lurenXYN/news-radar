@@ -1,0 +1,46 @@
+# Auto-deploy news-radar to the VPS over SSH when main is pushed.
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-news-radar-main
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.2
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          script_stop: true
+          command_timeout: 10m
+          envs: REPO_DIR,INSTALL_DIR
+          script: |
+            set -euo pipefail
+            REPO_DIR="${REPO_DIR:-$HOME/github/news-radar}"
+            INSTALL_DIR="${INSTALL_DIR:-/opt/news-radar}"
+            export REPO_DIR INSTALL_DIR
+            if [[ ! -d "$REPO_DIR/.git" ]]; then
+              echo "Missing git clone at $REPO_DIR"
+              echo "On the server first: git clone https://github.com/lurenXYN/news-radar.git \"$REPO_DIR\""
+              exit 1
+            fi
+            cd "$REPO_DIR"
+            git fetch --prune origin
+            git checkout main
+            git reset --hard origin/main
+            chmod +x deploy/remote-update.sh deploy/install-systemd.sh
+            SKIP_PULL=1 bash deploy/remote-update.sh
+        env:
+          REPO_DIR: ${{ vars.DEPLOY_REPO_DIR }}
+          INSTALL_DIR: ${{ vars.DEPLOY_INSTALL_DIR }}

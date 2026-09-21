@@ -57,6 +57,23 @@ GitHub：https://github.com/lurenXYN/news-radar
 2. 同步到 `D:\Source\Repos\news-radar`（排除 `.venv` / `data` / `__pycache__`）
 3. 在独立仓 `git commit` + `git push origin main`
 
+### 自动部署（push → VPS）
+
+与牛来同款：GitHub Actions SSH 更新服务器。  
+配置见 [`deploy/GITHUB_ACTIONS_DEPLOY.md`](./deploy/GITHUB_ACTIONS_DEPLOY.md)。
+
+服务器首次：
+
+```bash
+git clone https://github.com/lurenXYN/news-radar.git ~/github/news-radar
+cd ~/github/news-radar
+./deploy/install-systemd.sh
+```
+
+## 待办
+
+见 [`TODO.md`](./TODO.md)（A 盘面确认/相对热度/早报；B 接牛来）。
+
 ## 技术栈
 
 FastAPI + uvicorn + httpx + SQLite
