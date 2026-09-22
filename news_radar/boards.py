@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -15,21 +16,59 @@ log = logging.getLogger("news_radar.boards")
 
 EASTMONEY_UT = "bd1d9ddb04089700cf9c27f6f7426281"
 
+_CLIST_HOSTS: tuple[str, ...] = (
+    "push2.eastmoney.com",
+    "push2delay.eastmoney.com",
+    "push2his.eastmoney.com",
+)
+_CLIST_HOST_PREF: str | None = None
 
-def _clist_url(fs: str, pz: int = 100, pn: int = 1) -> str:
+
+def _clist_url(fs: str, pz: int = 100, pn: int = 1, *, host: str | None = None) -> str:
+    """Build a board clist URL on the given (or preferred) East Money edge."""
     fields = "f12,f13,f14,f2,f3,f20,f104,f105,f128,f140,f136"
+    h = host or _CLIST_HOST_PREF or _CLIST_HOSTS[0]
     return (
-        "https://push2delay.eastmoney.com/api/qt/clist/get"
+        f"https://{h}/api/qt/clist/get"
         f"?pn={pn}&pz={pz}&po=1&np=1&fltt=2&invt=2&fid=f3"
         f"&ut={EASTMONEY_UT}&fs={fs}&fields={fields}"
     )
 
 
-async def _get_json(client: httpx.AsyncClient, url: str) -> dict[str, Any]:
-    resp = await client.get(url, headers=HTTP_HEADERS, timeout=20.0)
-    resp.raise_for_status()
-    data = resp.json()
-    return data if isinstance(data, dict) else {}
+def _host_order() -> list[str]:
+    """Prefer last-good host, then the rest."""
+    pref = _CLIST_HOST_PREF
+    if pref and pref in _CLIST_HOSTS:
+        return [pref, *[h for h in _CLIST_HOSTS if h != pref]]
+    return list(_CLIST_HOSTS)
+
+
+async def _get_clist_json(
+    client: httpx.AsyncClient, fs: str, *, pz: int = 100, pn: int = 1
+) -> dict[str, Any]:
+    """GET clist with multi-host failover when one East Money edge returns 5xx."""
+    global _CLIST_HOST_PREF
+    last_error: Exception | None = None
+    for h in _host_order():
+        url = _clist_url(fs, pz=pz, pn=pn, host=h)
+        try:
+            resp = await client.get(url, headers=HTTP_HEADERS, timeout=20.0)
+            resp.raise_for_status()
+            data = resp.json()
+            if isinstance(data, dict):
+                _CLIST_HOST_PREF = h
+                return data
+            raise RuntimeError("clist non-dict payload")
+        except Exception as exc:
+            last_error = exc
+            if isinstance(exc, httpx.HTTPStatusError):
+                code = getattr(getattr(exc, "response", None), "status_code", 0) or 0
+                if code >= 500:
+                    continue
+            await asyncio.sleep(0.2)
+    if last_error is not None:
+        raise last_error
+    return {}
 
 
 def _rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -72,13 +111,11 @@ async def fetch_board_quotes(client: httpx.AsyncClient) -> list[dict[str, Any]]:
 
 
 async def _gather_boards(client: httpx.AsyncClient) -> tuple[list[dict], list[dict]]:
-    import asyncio
-
     c_payload, i1, i2, i3 = await asyncio.gather(
-        _get_json(client, _clist_url("m:90+t:3", pz=80)),
-        _get_json(client, _clist_url("m:90+t:2", pz=100, pn=1)),
-        _get_json(client, _clist_url("m:90+t:2", pz=100, pn=2)),
-        _get_json(client, _clist_url("m:90+t:2", pz=100, pn=3)),
+        _get_clist_json(client, "m:90+t:3", pz=80),
+        _get_clist_json(client, "m:90+t:2", pz=100, pn=1),
+        _get_clist_json(client, "m:90+t:2", pz=100, pn=2),
+        _get_clist_json(client, "m:90+t:2", pz=100, pn=3),
     )
     concept = _rows(c_payload)
     industry = _rows(i1) + _rows(i2) + _rows(i3)
