@@ -22,6 +22,9 @@ _CLIST_HOSTS: tuple[str, ...] = (
     "push2his.eastmoney.com",
 )
 _CLIST_HOST_PREF: str | None = None
+# Soft board confirm does not need sub-minute freshness; cache cuts same-IP clist noise.
+_BOARD_CACHE: tuple[float, list[dict[str, Any]]] | None = None
+_BOARD_CACHE_TTL_SEC = 240.0
 
 
 def _clist_url(fs: str, pz: int = 100, pn: int = 1, *, host: str | None = None) -> str:
@@ -87,11 +90,19 @@ def _num(v: Any, default: float = 0.0) -> float:
 
 async def fetch_board_quotes(client: httpx.AsyncClient) -> list[dict[str, Any]]:
     """Fetch industry + concept board day moves from East Money."""
+    import time
+
+    global _BOARD_CACHE
+    now = time.time()
+    if _BOARD_CACHE and now - _BOARD_CACHE[0] < _BOARD_CACHE_TTL_SEC:
+        return [dict(row) for row in _BOARD_CACHE[1]]
     out: list[dict[str, Any]] = []
     try:
         concept, industry = await _gather_boards(client)
     except Exception as exc:
         log.warning("fetch boards failed: %s", exc)
+        if _BOARD_CACHE:
+            return [dict(row) for row in _BOARD_CACHE[1]]
         return []
     for item in concept + industry:
         name = str(item.get("f14") or "")
@@ -107,18 +118,18 @@ async def fetch_board_quotes(client: httpx.AsyncClient) -> list[dict[str, Any]]:
                 "leader": str(item.get("f128") or ""),
             }
         )
+    if out:
+        _BOARD_CACHE = (now, out)
     return out
 
 
 async def _gather_boards(client: httpx.AsyncClient) -> tuple[list[dict], list[dict]]:
-    c_payload, i1, i2, i3 = await asyncio.gather(
-        _get_clist_json(client, "m:90+t:3", pz=80),
-        _get_clist_json(client, "m:90+t:2", pz=100, pn=1),
-        _get_clist_json(client, "m:90+t:2", pz=100, pn=2),
-        _get_clist_json(client, "m:90+t:2", pz=100, pn=3),
-    )
+    # Serialize pages: parallel clist on the same IP often coincides with desk ticks.
+    c_payload = await _get_clist_json(client, "m:90+t:3", pz=80)
+    i1 = await _get_clist_json(client, "m:90+t:2", pz=100, pn=1)
+    i2 = await _get_clist_json(client, "m:90+t:2", pz=100, pn=2)
     concept = _rows(c_payload)
-    industry = _rows(i1) + _rows(i2) + _rows(i3)
+    industry = _rows(i1) + _rows(i2)
     return concept, industry
 
 
