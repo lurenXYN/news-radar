@@ -24,6 +24,7 @@ _DEFAULTS: dict[str, Any] = {
     "morning_push_top_n": int(cfg.MORNING_PUSH_TOP_N),
     "change_brief_enabled": bool(cfg.CHANGE_BRIEF_ENABLED),
     "sector_blacklist": "",
+    "desk_boards_url": str(getattr(cfg, "DESK_BOARDS_URL", "") or ""),
 }
 
 
@@ -43,6 +44,9 @@ def get_settings(*, refresh: bool = False) -> dict[str, Any]:
     env_key = os.environ.get("NEWS_RADAR_SERVERCHAN_SENDKEY", "").strip()
     if env_key:
         out["serverchan_sendkey"] = env_key
+    env_desk = os.environ.get("NEWS_RADAR_DESK_BOARDS_URL", "").strip()
+    if env_desk:
+        out["desk_boards_url"] = env_desk
     out = _clamp(out)
     _CACHE = dict(out)
     return dict(out)
@@ -80,6 +84,7 @@ def _clamp(out: dict[str, Any]) -> dict[str, Any]:
     out["morning_push_top_n"] = max(1, min(10, int(out["morning_push_top_n"])))
     out["change_brief_enabled"] = bool(out.get("change_brief_enabled", True))
     out["sector_blacklist"] = str(out.get("sector_blacklist") or "").strip()
+    out["desk_boards_url"] = str(out.get("desk_boards_url") or "").strip().rstrip("/")
     return out
 
 

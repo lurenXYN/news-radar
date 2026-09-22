@@ -44,6 +44,8 @@ MORNING_PUSH_ONLY = False
 REL_HEAT_MIN_DELTA = 1.5
 # Board day-move threshold (pct) to call 「共振」.
 BOARD_CONFIRM_PCT = 0.8
+# Prefer market-desk soft board export over East Money clist (same VPS).
+DESK_BOARDS_URL = "http://127.0.0.1:8765/api/export/boards"
 
 # Server酱³ SendKey (SCT...). Empty = push disabled until set in settings / env.
 # Prefer env NEWS_RADAR_SERVERCHAN_SENDKEY or UI settings over hardcoding.

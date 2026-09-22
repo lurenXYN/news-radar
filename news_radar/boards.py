@@ -89,13 +89,19 @@ def _num(v: Any, default: float = 0.0) -> float:
 
 
 async def fetch_board_quotes(client: httpx.AsyncClient) -> list[dict[str, Any]]:
-    """Fetch industry + concept board day moves from East Money."""
+    """Fetch board day moves: prefer market-desk export, else East Money clist."""
     import time
 
     global _BOARD_CACHE
     now = time.time()
     if _BOARD_CACHE and now - _BOARD_CACHE[0] < _BOARD_CACHE_TTL_SEC:
         return [dict(row) for row in _BOARD_CACHE[1]]
+
+    desk_rows = await _fetch_boards_from_desk(client)
+    if desk_rows:
+        _BOARD_CACHE = (now, desk_rows)
+        return [dict(row) for row in desk_rows]
+
     out: list[dict[str, Any]] = []
     try:
         concept, industry = await _gather_boards(client)
@@ -120,6 +126,53 @@ async def fetch_board_quotes(client: httpx.AsyncClient) -> list[dict[str, Any]]:
         )
     if out:
         _BOARD_CACHE = (now, out)
+    return out
+
+
+async def _fetch_boards_from_desk(client: httpx.AsyncClient) -> list[dict[str, Any]]:
+    """Pull soft board quotes from market-desk when co-hosted on the same box."""
+    try:
+        from news_radar.settings import setting
+
+        url = str(setting("desk_boards_url", "") or "").strip()
+    except Exception:
+        url = ""
+    if not url:
+        from news_radar import config as nr_cfg
+
+        url = str(getattr(nr_cfg, "DESK_BOARDS_URL", "") or "")
+    url = str(url or "").rstrip("/")
+    if not url:
+        return []
+    try:
+        resp = await client.get(url, timeout=4.0)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:
+        log.info("desk boards skipped: %s", exc)
+        return []
+    rows = data.get("boards") if isinstance(data, dict) else None
+    if not isinstance(rows, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for raw in rows:
+        if not isinstance(raw, dict):
+            continue
+        bk = str(raw.get("bk") or "").upper()
+        name = str(raw.get("name") or "")
+        if not bk.startswith("BK") or not name:
+            continue
+        out.append(
+            {
+                "bk": bk,
+                "name": name,
+                "pct": round(_num(raw.get("pct")), 2),
+                "amount": _num(raw.get("amount")),
+                "leader": str(raw.get("leader") or ""),
+            }
+        )
+    if out:
+        log.info("board quotes from desk n=%s", len(out))
     return out
 
 
