@@ -100,6 +100,87 @@ def format_morning_digest(sectors: list[dict[str, Any]], *, as_of: str) -> tuple
     )
 
 
+def _pct_text(pct: Any) -> str:
+    """Format a board pct value (or dash when missing)."""
+    if pct is None:
+        return "—"
+    try:
+        return f"{float(pct):+.2f}%"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def _article_time(a: dict[str, Any]) -> str:
+    """Return the ``HH:MM`` publish (or fetch) time of one article."""
+    raw = str(a.get("published_at") or a.get("fetched_at") or "").strip()
+    if len(raw) < 16:
+        return ""
+    return raw[11:16]
+
+
+def _keyword_text(row: dict[str, Any], limit: int = 5) -> str:
+    """Join the distinct lexicon keywords that hit this sector."""
+    raw = row.get("keywords")
+    if isinstance(raw, (list, tuple)):
+        parts = [str(x).strip() for x in raw]
+    else:
+        parts = [x.strip() for x in str(raw or "").split(",")]
+    seen: list[str] = []
+    for p in parts:
+        if p and p not in seen:
+            seen.append(p)
+    return " / ".join(seen[:limit])
+
+
+def digest_overview_line(rows: list[dict[str, Any]]) -> str:
+    """One-line market read: confirm buckets + bearish count + hottest names."""
+    if not rows:
+        return ""
+    buckets = {"resonance": 0, "board_lead": 0, "news_only": 0}
+    bear = 0
+    for r in rows:
+        c = str(r.get("confirm") or "")
+        if c in buckets:
+            buckets[c] += 1
+        if str(r.get("tone") or "") == "bearish":
+            bear += 1
+    hottest = [str(r.get("sector") or "") for r in rows[:3] if r.get("sector")]
+    parts = [
+        f"共振 {buckets['resonance']}",
+        f"盘面已动 {buckets['board_lead']}",
+        f"仅新闻 {buckets['news_only']}",
+    ]
+    if bear:
+        parts.append(f"偏空 {bear}")
+    line = "**概览**：" + " · ".join(parts)
+    if hottest:
+        line += f"；靠前：{' / '.join(hottest)}"
+    return line
+
+
+def digest_compare_line(
+    picked: list[dict[str, Any]], earlier: list[str] | None, *, label: str
+) -> str:
+    """Summarize enter / stay / exit versus an earlier digest's sector list."""
+    if not earlier:
+        return ""
+    now_names = [str(r.get("sector") or "") for r in picked if r.get("sector")]
+    prev = [str(x) for x in earlier if x]
+    new = [x for x in now_names if x not in prev]
+    kept = [x for x in now_names if x in prev]
+    gone = [x for x in prev if x not in now_names]
+    bits: list[str] = []
+    if new:
+        bits.append(f"新进 {' / '.join(new)}")
+    if kept:
+        bits.append(f"延续 {' / '.join(kept)}")
+    if gone:
+        bits.append(f"退出 {' / '.join(gone)}")
+    if not bits:
+        return ""
+    return f"**较{label}**：" + "；".join(bits)
+
+
 def format_watch_digest(
     sectors: list[dict[str, Any]],
     *,
@@ -108,8 +189,15 @@ def format_watch_digest(
     heading: str = "板块观察汇总",
     tip: str = "优先看 **共振 / 盘面已动**；合并推送，避免刷屏。",
     extra_sections: list[str] | None = None,
+    overview: str = "",
+    compare: str = "",
+    also_watch: list[dict[str, Any]] | None = None,
 ) -> tuple[str, str]:
-    """Build one Server酱 digest covering multiple sectors (merged push)."""
+    """Build one Server酱 digest covering multiple sectors (merged push).
+
+    Each sector carries heat / confirm / board / keywords / action plus up to
+    three timed headlines; ``also_watch`` lists runners-up in one line each.
+    """
     day = as_of[:10] if as_of else ""
     n = len(sectors)
     title = f"{title_prefix} {day} · Top{n}".strip()
@@ -117,20 +205,24 @@ def format_watch_digest(
         f"# {heading}",
         f"_更新于 {as_of or '—'}_",
         "",
-        tip,
-        "",
     ]
+    if overview:
+        lines.extend([overview, ""])
+    if compare:
+        lines.extend([compare, ""])
+    lines.extend([tip, ""])
     for i, row in enumerate(sectors, 1):
         sector = str(row.get("sector") or "")
         theme = str(row.get("theme") or "")
         score = float(row.get("score") or 0)
         delta = float(row.get("delta") or 0)
+        delta_1h = row.get("delta_1h")
         label = str(row.get("confirm_label") or row.get("label") or "")
         tone = str(row.get("tone_label") or "")
-        pct = row.get("board_pct")
         etfs = row.get("etfs") or []
         hint = str(row.get("action_hint") or "").strip()
-        pct_s = "—" if pct is None else f"{float(pct):+.2f}%"
+        note = str(row.get("confirm_note") or "").strip()
+        board = str(row.get("board_name") or "").strip()
         head = f"## {i}. {sector}"
         if theme and theme != sector:
             head += f"（{theme}）"
@@ -139,57 +231,64 @@ def format_watch_digest(
         if tone and tone != "中性":
             head += f" · {tone}"
         lines.append(head)
-        lines.append(f"- 热度 `{score:.1f}` · 相对 `{delta:+.1f}` · 盘面 `{pct_s}`")
+        heat = f"- 热度 `{score:.1f}` · 相对 `{delta:+.1f}`"
+        if delta_1h not in (None, ""):
+            try:
+                heat += f" · 近1h `{float(delta_1h):+.1f}`"
+            except (TypeError, ValueError):
+                pass
+        cnt = int(row.get("article_count") or 0)
+        if cnt:
+            heat += f" · 新闻 {cnt} 条"
+        lines.append(heat)
+        board_line = f"- 盘面 `{_pct_text(row.get('board_pct'))}`"
+        if board:
+            board_line += f"（{board}）"
+        if note:
+            board_line += f" · {note}"
+        lines.append(board_line)
         if row.get("bk_warn"):
             lines.append("- ⚠ BK 未精确命中，名称模糊匹配")
+        kw = _keyword_text(row)
+        if kw:
+            lines.append(f"- 关键词：{kw}")
         if etfs:
             lines.append(f"- ETF：{' / '.join(str(x) for x in etfs[:3])}")
         if hint:
             lines.append(f"- 动作：{hint}")
         arts = row.get("articles") or []
-        for a in arts[:2]:
+        for a in arts[:3]:
             t = str(a.get("title") or "").strip()
+            if not t:
+                continue
             u = str(a.get("url") or "").strip()
-            if u:
-                lines.append(f"- [{t}]({u})")
-            elif t:
-                lines.append(f"- {t}")
+            meta = " · ".join(
+                x for x in (_article_time(a), str(a.get("source") or "").strip()) if x
+            )
+            suffix = f" _{meta}_" if meta else ""
+            lines.append(f"- [{t}]({u}){suffix}" if u else f"- {t}{suffix}")
+        lines.append("")
+    if also_watch:
+        lines.append("## 其余留意")
+        for row in also_watch:
+            sector = str(row.get("sector") or "")
+            if not sector:
+                continue
+            label = str(row.get("confirm_label") or row.get("label") or "")
+            etf = (row.get("etfs") or [""])[0]
+            bits = [
+                f"**{sector}**",
+                label,
+                f"热度 {float(row.get('score') or 0):.1f}",
+                f"相对 {float(row.get('delta') or 0):+.1f}",
+                f"盘面 {_pct_text(row.get('board_pct'))}",
+            ]
+            if etf:
+                bits.append(f"`{etf}`")
+            lines.append("- " + " · ".join(b for b in bits if b))
         lines.append("")
     if extra_sections:
         lines.extend(extra_sections)
-        lines.append("")
-    lines.append("---")
-    lines.append("_news-radar · 软提示，不构成投资建议_")
-    return title, "\n".join(lines)
-
-
-def format_change_brief(
-    changes: list[dict[str, Any]], *, as_of: str
-) -> tuple[str, str]:
-    """Build a short trading-hours change brief (not a full digest)."""
-    n = len(changes)
-    title = f"新闻雷达 · 本小时变化 {n}"
-    lines = [
-        "# 交易时段变化简报",
-        f"_更新于 {as_of or '—'}_",
-        "",
-        "仅列出相对上次观察有变化的板块（有变化才推 · ≥30 分钟冷却）。",
-        "",
-    ]
-    for i, row in enumerate(changes, 1):
-        sector = str(row.get("sector") or "")
-        reason = str(row.get("change_reason") or "有变化")
-        label = str(row.get("confirm_label") or row.get("label") or "")
-        score = float(row.get("score") or 0)
-        delta = float(row.get("delta") or 0)
-        pct = row.get("board_pct")
-        pct_s = "—" if pct is None else f"{float(pct):+.2f}%"
-        lines.append(f"## {i}. {sector}" + (f" · {label}" if label else ""))
-        lines.append(f"- 变化：{reason}")
-        lines.append(f"- 热度 `{score:.1f}` · 相对 `{delta:+.1f}` · 盘面 `{pct_s}`")
-        etfs = row.get("etfs") or []
-        if etfs:
-            lines.append(f"- ETF：{' / '.join(str(x) for x in etfs[:2])}")
         lines.append("")
     lines.append("---")
     lines.append("_news-radar · 软提示，不构成投资建议_")

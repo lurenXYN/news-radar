@@ -100,11 +100,12 @@
       </section>
       <section class="card">
         <h2>Server酱 / 参数</h2>
-        <p class="meta">推送时刻：<code>09:00</code> 盘前总报 · <code>13:00</code> 盘中总报 · 交易时段变化简报（有变化且≥30分钟）· <code>21:00</code> 晚间总报。均为合并一条。</p>
+        <p class="meta">推送时刻（仅交易日，每档一条）：<code>09:00</code> 盘前总报 · <code>13:00</code> 盘中总报（较盘前）· <code>21:00</code> 晚间总报（较午间 + 隔夜线索）。每条含概览、Top 板块详情（关键词 / 盘面 / 3 条带时间来源的新闻）与「其余留意」。</p>
         <label>SendKey（留空则不改）</label>
         <input type="text" id="scKey" placeholder="SCT..." autocomplete="off" />
         <div class="chk"><input type="checkbox" id="scOn" /> 启用推送</div>
-        <div class="chk"><input type="checkbox" id="changeBrief" checked /> 交易时段变化简报</div>
+        <label>总报详细板块数</label>
+        <input type="number" id="topN" min="1" max="10" />
         <label>刷新间隔（秒）</label>
         <input type="number" id="refreshSec" min="60" max="3600" />
         <label>热度窗口（小时）</label>
@@ -175,7 +176,7 @@
       const r = await fetch("/api/settings");
       const s = await r.json();
       document.getElementById("scOn").checked = !!s.serverchan_enabled;
-      document.getElementById("changeBrief").checked = s.change_brief_enabled !== false;
+      document.getElementById("topN").value = s.morning_push_top_n ?? 5;
       document.getElementById("scKey").placeholder = s.serverchan_sendkey_set
         ? ("已保存 " + (s.serverchan_sendkey || ""))
         : "SCT...";
@@ -376,7 +377,7 @@
     document.getElementById("btnSave").onclick = async () => {
       const body = {
         serverchan_enabled: document.getElementById("scOn").checked,
-        change_brief_enabled: document.getElementById("changeBrief").checked,
+        morning_push_top_n: Number(document.getElementById("topN").value),
         refresh_seconds: Number(document.getElementById("refreshSec").value),
         heat_window_hours: Number(document.getElementById("heatHours").value),
         morning_push_min_score: Number(document.getElementById("pushMin").value),

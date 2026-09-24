@@ -294,24 +294,6 @@ def was_pushed_recently(push_key: str, cooldown_sec: int) -> bool:
     return row is not None
 
 
-def any_push_keys_recently(push_keys: list[str], cooldown_sec: int) -> bool:
-    """Return True if any of the keys was pushed inside the cooldown window."""
-    keys = [str(k) for k in push_keys if k]
-    if not keys:
-        return False
-    cutoff = (datetime.now(CN_TZ) - timedelta(seconds=cooldown_sec)).strftime(
-        "%Y-%m-%d %H:%M:%S"
-    )
-    placeholders = ",".join("?" for _ in keys)
-    with connect() as conn:
-        row = conn.execute(
-            f"SELECT 1 FROM push_log WHERE push_key IN ({placeholders}) "
-            "AND created_at>=? AND ok=1 LIMIT 1",
-            (*keys, cutoff),
-        ).fetchone()
-    return row is not None
-
-
 def log_push(
     push_key: str,
     title: str,
@@ -332,7 +314,7 @@ def log_push(
                 _now(),
                 1 if ok else 0,
                 kind or _kind_from_key(push_key),
-                (desp or "")[:4000],
+                (desp or "")[:8000],
                 (error or "")[:500],
                 "",
             ),

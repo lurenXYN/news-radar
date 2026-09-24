@@ -15,7 +15,6 @@ from news_radar.collect import collect_all
 from news_radar.dedupe import dedupe_articles
 from news_radar.calendar import is_trading_day
 from news_radar.db import (
-    any_push_keys_recently,
     count_pushes_today,
     heat_map,
     init_db,
@@ -24,12 +23,14 @@ from news_radar.db import (
     list_push_log,
     list_recent_articles,
     list_unsettle_resonance_marks,
+    load_setting,
     log_push,
     purge_old_articles,
     query_push_log,
     recent_articles_for_sector,
     resonance_backtest_summary,
     save_resonance_outcome,
+    save_setting,
     sector_heat,
     sector_heat_between,
     upsert_resonance_marks,
@@ -37,7 +38,8 @@ from news_radar.db import (
 )
 from news_radar.lexicon import overnight_hints_from_text
 from news_radar.notify import (
-    format_change_brief,
+    digest_compare_line,
+    digest_overview_line,
     format_overnight_sections,
     format_watch_digest,
     notify_serverchan,
@@ -68,26 +70,6 @@ def _in_hhmm_window(now: datetime, start: str, end: str) -> bool:
     end_h, end_m = _parse_hhmm(end)
     minutes = now.hour * 60 + now.minute
     return (start_h * 60 + start_m) <= minutes <= (end_h * 60 + end_m)
-
-
-def _is_a_share_trading_session(now: datetime) -> bool:
-    """True during A-share continuous auction on a trading day."""
-    if not is_trading_day(now):
-        return False
-    minutes = now.hour * 60 + now.minute
-    morning = 9 * 60 + 30 <= minutes <= 11 * 60 + 30
-    afternoon = 13 * 60 <= minutes <= 15 * 60
-    return morning or afternoon
-
-
-def _watch_fingerprint(rows: list[dict[str, Any]]) -> str:
-    """Compact signature for change detection."""
-    parts = []
-    for r in rows[:8]:
-        parts.append(
-            f"{r.get('sector')}|{r.get('confirm')}|{round(float(r.get('delta') or 0), 0)}"
-        )
-    return ";".join(parts)
 
 
 def _pick_digest_rows(
@@ -131,77 +113,13 @@ def _age_decay_mult(published_at: str | None, fetched_at: str | None) -> float:
     return 0.35
 
 
-_CONFIRM_RANK = {
-    "resonance": 4,
-    "board_lead": 3,
-    "news_only": 2,
-    "diverge": 1,
-    "neutral": 0,
-    "unknown": 0,
-}
+_DIGEST_PREV_KIND = {"midday": ("morning", "盘前"), "evening": ("midday", "午间")}
+_ALSO_WATCH_N = 4
 
 
-def _has_linked_article(row: dict[str, Any]) -> bool:
-    """True when the sector row carries at least one news URL."""
-    for a in row.get("articles") or []:
-        if str(a.get("url") or "").strip() and str(a.get("title") or "").strip():
-            return True
-    return False
-
-
-def _detect_watch_changes(
-    prev: dict[str, dict[str, Any]] | None,
-    cur_rows: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Return quality-gated changes: new / confirm upgrade / heat jump + news link."""
-    if not prev:
-        return []
-    out: list[dict[str, Any]] = []
-    for row in cur_rows[:10]:
-        sector = str(row.get("sector") or "")
-        if not sector:
-            continue
-        if not _has_linked_article(row):
-            continue
-        confirm = str(row.get("confirm") or "")
-        if confirm not in ("resonance", "board_lead", "news_only") and not row.get("rising"):
-            continue
-        old = prev.get(sector)
-        reasons: list[str] = []
-        if old is None:
-            if confirm in ("resonance", "board_lead") or (
-                confirm == "news_only" and row.get("rising")
-            ):
-                reasons.append("新进观察")
-        else:
-            old_c = str(old.get("confirm") or "")
-            new_c = confirm
-            if _CONFIRM_RANK.get(new_c, 0) > _CONFIRM_RANK.get(old_c, 0) and new_c in (
-                "resonance",
-                "board_lead",
-            ):
-                reasons.append(
-                    f"确认升级 {old.get('confirm_label') or old_c}→{row.get('confirm_label') or new_c}"
-                )
-            try:
-                d0 = float(old.get("delta") or 0)
-                d1 = float(row.get("delta") or 0)
-                if d1 - d0 >= 2.5 and row.get("rising"):
-                    reasons.append(f"相对热度↑ {d0:+.0f}→{d1:+.0f}")
-            except (TypeError, ValueError):
-                pass
-            if not old.get("rising") and row.get("rising") and confirm in (
-                "resonance",
-                "board_lead",
-                "news_only",
-            ):
-                reasons.append("转为升温")
-        if not reasons:
-            continue
-        item = dict(row)
-        item["change_reason"] = "；".join(reasons)
-        out.append(item)
-    return out[:3]
+def _digest_picks_key(kind: str, day: str) -> str:
+    """Settings key that remembers which sectors a digest listed."""
+    return f"digest_picks:{kind}:{day}"
 
 
 def _rank_key(row: dict[str, Any]) -> tuple[float, float, float]:
@@ -233,9 +151,6 @@ class RadarEngine:
         }
         self._lock = asyncio.Lock()
         self._task: asyncio.Task[None] | None = None
-        # Baseline for trading-hours change brief.
-        self._brief_baseline: dict[str, dict[str, Any]] | None = None
-        self._brief_fp: str = ""
 
     def start(self) -> None:
         """Create tables and start the polling task."""
@@ -470,14 +385,13 @@ class RadarEngine:
         now: datetime,
         boards: list[dict[str, Any]] | None = None,
     ) -> int:
-        """Run scheduled digests + trading-hours change brief (mute on holidays)."""
+        """Run the three scheduled digests (mute on holidays)."""
         if not bool(setting("serverchan_enabled", False)):
             return 0
         key = str(setting("serverchan_sendkey", "") or "").strip()
         if not key:
             return 0
         if not is_trading_day(now):
-            self._update_brief_baseline(sectors)
             return 0
         sent = 0
         sent += self._push_scheduled_digest(
@@ -514,10 +428,6 @@ class RadarEngine:
             tip="当日催化收束；含隔夜/全球 → A 股传导线索（软提示）。",
             include_overnight=True,
         )
-        if bool(setting("change_brief_enabled", cfg.CHANGE_BRIEF_ENABLED)):
-            sent += self._push_change_brief(sectors, key=key, now=now)
-        else:
-            self._update_brief_baseline(sectors)
         # Mark resonance after midday for next-day settle (also refresh at evening).
         if _in_hhmm_window(now, cfg.MIDDAY_PUSH_START, "15:10") or _in_hhmm_window(
             now, cfg.EVENING_PUSH_START, cfg.EVENING_PUSH_END
@@ -554,9 +464,17 @@ class RadarEngine:
             return 0
         min_score = float(setting("morning_push_min_score", cfg.MORNING_PUSH_MIN_SCORE))
         top_n = int(setting("morning_push_top_n", cfg.MORNING_PUSH_TOP_N))
-        picked = _pick_digest_rows(sectors, min_score=min_score, top_n=top_n)
+        pool = _pick_digest_rows(sectors, min_score=min_score, top_n=top_n + _ALSO_WATCH_N)
+        picked = pool[:top_n]
+        also_watch = pool[top_n:]
         if not picked and not include_overnight:
             return 0
+        compare = ""
+        prev = _DIGEST_PREV_KIND.get(kind)
+        if prev:
+            earlier = load_setting(_digest_picks_key(prev[0], day), None)
+            if isinstance(earlier, list):
+                compare = digest_compare_line(picked, earlier, label=prev[1])
         extra: list[str] = []
         if include_overnight:
             blob = "\n".join(
@@ -578,9 +496,17 @@ class RadarEngine:
             heading=heading,
             tip=tip,
             extra_sections=extra or None,
+            overview=digest_overview_line(
+                [s for s in sectors if float(s.get("score") or 0) >= min_score]
+            ),
+            compare=compare,
+            also_watch=also_watch or None,
         )
         if self._send_push(key, push_key, title, desp, kind=kind):
-            self._update_brief_baseline(sectors)
+            save_setting(
+                _digest_picks_key(kind, day),
+                [str(r.get("sector") or "") for r in picked if r.get("sector")],
+            )
             log.info("serverchan %s digest n=%s", kind, len(picked))
             return 1
         return 0
@@ -683,9 +609,6 @@ class RadarEngine:
             "recent": list_push_log(20),
             "backtest": resonance_backtest_summary(30),
             "serverchan_enabled": bool(setting("serverchan_enabled", False)),
-            "change_brief_enabled": bool(
-                setting("change_brief_enabled", cfg.CHANGE_BRIEF_ENABLED)
-            ),
             "pushes_today": count_pushes_today(ok_only=True),
             "push_daily_max": int(setting("push_daily_max", cfg.PUSH_DAILY_MAX)),
         }
@@ -693,68 +616,6 @@ class RadarEngine:
     def query_history(self, **kwargs: Any) -> dict[str, Any]:
         """Proxy to push history query for the API layer."""
         return query_push_log(**kwargs)
-
-    def _update_brief_baseline(self, sectors: list[dict[str, Any]]) -> None:
-        """Refresh change-brief baseline from current watch-like rows."""
-        rows = _pick_digest_rows(
-            sectors,
-            min_score=float(setting("morning_push_min_score", cfg.MORNING_PUSH_MIN_SCORE)),
-            top_n=8,
-        )
-        self._brief_baseline = {str(r.get("sector") or ""): dict(r) for r in rows if r.get("sector")}
-        self._brief_fp = _watch_fingerprint(rows)
-
-    def _push_change_brief(self, sectors: list[dict[str, Any]], *, key: str, now: datetime) -> int:
-        """Push short delta brief in trading hours only (change + 30min cooldown)."""
-        if not _is_a_share_trading_session(now):
-            # Outside session: keep baseline warm so open doesn't dump a false brief.
-            if self._brief_baseline is None:
-                self._update_brief_baseline(sectors)
-            return 0
-
-        day = now.strftime("%Y-%m-%d")
-        digest_keys = [
-            f"digest:morning:{day}",
-            f"digest:midday:{day}",
-            f"digest:evening:{day}",
-        ]
-        gap = int(setting("digest_gap_seconds", cfg.DIGEST_GAP_SECONDS))
-        if any_push_keys_recently(digest_keys, gap):
-            self._update_brief_baseline(sectors)
-            return 0
-
-        cooldown = int(setting("push_cooldown_seconds", cfg.PUSH_COOLDOWN_SECONDS))
-        brief_key = f"brief:{day}"
-        if was_pushed_recently(brief_key, cooldown):
-            return 0
-
-        cur_rows = _pick_digest_rows(
-            sectors,
-            min_score=float(setting("morning_push_min_score", cfg.MORNING_PUSH_MIN_SCORE)),
-            top_n=8,
-        )
-        fp = _watch_fingerprint(cur_rows)
-        if self._brief_baseline is None:
-            self._update_brief_baseline(sectors)
-            return 0
-        if fp == self._brief_fp:
-            return 0
-
-        changes = _detect_watch_changes(self._brief_baseline, cur_rows)
-        if not changes:
-            self._brief_fp = fp
-            self._brief_baseline = {
-                str(r.get("sector") or ""): dict(r) for r in cur_rows if r.get("sector")
-            }
-            return 0
-
-        as_of = now.strftime("%Y-%m-%d %H:%M")
-        title, desp = format_change_brief(changes, as_of=as_of)
-        if self._send_push(key, brief_key, title, desp, kind="brief"):
-            self._update_brief_baseline(sectors)
-            log.info("serverchan change brief n=%s", len(changes))
-            return 1
-        return 0
 
 
 engine = RadarEngine()

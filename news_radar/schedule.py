@@ -83,10 +83,4 @@ def push_schedule_status(now: datetime) -> dict[str, Any]:
         "now": now.strftime("%Y-%m-%d %H:%M:%S"),
         "today": today,
         "next": next_slot,
-        "brief": {
-            "enabled_default": True,
-            "session": "09:30–11:30 / 13:00–15:00（仅交易日）",
-            "cooldown_minutes": int(cfg.PUSH_COOLDOWN_SECONDS) // 60,
-            "digest_gap_minutes": int(cfg.DIGEST_GAP_SECONDS) // 60,
-        },
     }

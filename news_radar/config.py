@@ -17,12 +17,8 @@ REFRESH_SECONDS = 300
 ARTICLE_RETENTION_DAYS = 14
 # Heat window for sector ranking (hours).
 HEAT_WINDOW_HOURS = 24
-# Minimum sector score before change-brief / legacy filters.
+# Minimum sector score for legacy filters.
 PUSH_SCORE_MIN = 8.0
-# Change-brief cooldown (seconds) after last brief.
-PUSH_COOLDOWN_SECONDS = 1800
-# After any 总报, wait this long before a change brief.
-DIGEST_GAP_SECONDS = 2400
 # Max successful Server酱 pushes per calendar day (quota).
 PUSH_DAILY_MAX = 8
 # Soft sector blacklist (comma-separated names in settings).
@@ -35,9 +31,8 @@ MIDDAY_PUSH_END = "13:10"
 EVENING_PUSH_START = "20:55"
 EVENING_PUSH_END = "21:15"
 MORNING_PUSH_MIN_SCORE = 3.0
-MORNING_PUSH_TOP_N = 3
-# Enable trading-hours change brief (有变化才推).
-CHANGE_BRIEF_ENABLED = True
+# Detailed sectors per digest; a few runners-up are listed in one line each.
+MORNING_PUSH_TOP_N = 5
 # Deprecated alias kept for old settings rows; ignored by new schedule.
 MORNING_PUSH_ONLY = False
 # Relative heat: compare current window vs the previous equal window.

@@ -23,13 +23,10 @@ class SettingsIn(BaseModel):
     refresh_seconds: int | None = None
     heat_window_hours: int | None = None
     push_score_min: float | None = None
-    push_cooldown_seconds: int | None = None
     serverchan_enabled: bool | None = None
     serverchan_sendkey: str | None = Field(default=None, description="SCT... SendKey")
     morning_push_min_score: float | None = None
     morning_push_top_n: int | None = None
-    change_brief_enabled: bool | None = None
-    digest_gap_seconds: int | None = None
     push_daily_max: int | None = None
     sector_blacklist: str | None = None
 
