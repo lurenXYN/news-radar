@@ -11,6 +11,27 @@ from typing import Any
 
 log = logging.getLogger("news_radar.notify")
 
+# Server酱 accepts desp up to 32KB; keep headroom for URL-encoding overhead.
+SERVERCHAN_DESP_MAX_BYTES = 30000
+
+
+def clip_desp(desp: str, max_bytes: int = SERVERCHAN_DESP_MAX_BYTES) -> str:
+    """Trim markdown to ``max_bytes`` UTF-8 bytes on a whole-line boundary."""
+    text = str(desp or "")
+    if len(text.encode("utf-8")) <= max_bytes:
+        return text
+    note = "\n\n_…内容过长已截断，完整版见新闻雷达页面_"
+    budget = max_bytes - len(note.encode("utf-8"))
+    kept: list[str] = []
+    used = 0
+    for line in text.split("\n"):
+        size = len(line.encode("utf-8")) + 1
+        if used + size > budget:
+            break
+        kept.append(line)
+        used += size
+    return "\n".join(kept) + note
+
 
 def notify_serverchan(sendkey: str, title: str, desp: str) -> dict[str, Any]:
     """POST one message to Server酱³. Return ``{ok, error}``."""
@@ -21,7 +42,7 @@ def notify_serverchan(sendkey: str, title: str, desp: str) -> dict[str, Any]:
     payload = urllib.parse.urlencode(
         {
             "title": str(title or "新闻雷达")[:100],
-            "desp": str(desp or "")[:4000],
+            "desp": clip_desp(desp),
         }
     ).encode("utf-8")
     req = urllib.request.Request(

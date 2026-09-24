@@ -314,7 +314,7 @@ def log_push(
                 _now(),
                 1 if ok else 0,
                 kind or _kind_from_key(push_key),
-                (desp or "")[:8000],
+                (desp or "")[:20000],
                 (error or "")[:500],
                 "",
             ),
