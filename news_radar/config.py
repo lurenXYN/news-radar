@@ -30,6 +30,9 @@ MIDDAY_PUSH_START = "12:55"
 MIDDAY_PUSH_END = "13:10"
 EVENING_PUSH_START = "20:55"
 EVENING_PUSH_END = "21:15"
+# Server酱 free tier allows 5 pushes per SendKey per day, shared with
+# market-desk (15:05 EOD one-pager); keep news-radar to the three digests.
+EMPTY_WINDOW_ALERT = False
 MORNING_PUSH_MIN_SCORE = 3.0
 # Detailed sectors per digest; a few runners-up are listed in one line each.
 MORNING_PUSH_TOP_N = 5

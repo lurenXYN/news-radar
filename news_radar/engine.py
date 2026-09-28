@@ -541,7 +541,7 @@ class RadarEngine:
 
     def _maybe_empty_window_alert(self, *, now: datetime) -> None:
         """Once per day: if morning window passed with no digest, notify once."""
-        if not is_trading_day(now):
+        if not cfg.EMPTY_WINDOW_ALERT or not is_trading_day(now):
             return
         if not bool(setting("serverchan_enabled", False)):
             return
