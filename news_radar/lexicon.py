@@ -55,6 +55,11 @@ BOARD_BK: dict[str, list[str]] = {
     "美股映射/风险偏好": [],
 }
 
+# Optional per-rule fields:
+#   exclude: keyword → context needles; the keyword is ignored when any needle
+#            appears anywhere in the article text (e.g. 航空 next to 航班);
+#   weak:    generic keywords counted at WEAK_KEYWORD_MULT;
+#   context: background bucket (macro / US) — kept out of Top ranking & export.
 SECTOR_RULES: list[dict[str, Any]] = [
     {
         "sector": "半导体",
@@ -78,6 +83,7 @@ SECTOR_RULES: list[dict[str, Any]] = [
             "人工智能", "AI", "大模型", "算力", "ChatGPT", "DeepSeek",
             "智能驾驶", "机器人", "人形机器人",
         ],
+        "exclude": {"机器人": ["聊天机器人"]},
     },
     {
         "sector": "通信",
@@ -85,7 +91,7 @@ SECTOR_RULES: list[dict[str, Any]] = [
         "bks": BOARD_BK["通信"],
         "weight": 1.1,
         "priority": "A",
-        "keywords": ["5G", "6G", "光模块", "CPO", "光纤", "运营商", "电信", "移动", "联通"],
+        "keywords": ["5G", "6G", "光模块", "CPO", "光纤", "运营商", "中国电信", "中国移动", "中国联通"],
     },
     {
         "sector": "新能源/锂电",
@@ -116,6 +122,8 @@ SECTOR_RULES: list[dict[str, Any]] = [
         "weight": 1.0,
         "priority": "A",
         "keywords": ["白酒", "茅台", "五粮液", "消费", "社零", "免税", "旅游", "酒店"],
+        "weak": ["消费", "旅游", "酒店"],
+        "exclude": {"消费": ["消费电子", "消费税"]},
     },
     {
         "sector": "银行",
@@ -124,6 +132,13 @@ SECTOR_RULES: list[dict[str, Any]] = [
         "weight": 1.0,
         "priority": "A",
         "keywords": ["银行", "净息差", "降准", "MLF", "LPR", "信贷", "坏账"],
+        "exclude": {
+            "银行": [
+                "高盛", "摩根", "花旗", "瑞银", "汇丰", "巴克莱", "富国银行", "美国银行",
+                "德意志银行", "世界银行", "投资银行", "投行", "开发银行", "进出口银行",
+                "亚投行", "欧洲央行", "日本央行", "英国央行",
+            ],
+        },
     },
     {
         "sector": "证券",
@@ -132,6 +147,8 @@ SECTOR_RULES: list[dict[str, Any]] = [
         "weight": 1.05,
         "priority": "A",
         "keywords": ["券商", "证券", "IPO", "注册制", "两融", "成交额", "印花税"],
+        "weak": ["IPO"],
+        "exclude": {"IPO": ["港股IPO", "美股IPO", "递表", "港交所", "纽交所", "纳斯达克上市", "赴美上市"]},
     },
     {
         "sector": "房地产",
@@ -156,6 +173,11 @@ SECTOR_RULES: list[dict[str, Any]] = [
         "weight": 1.1,
         "priority": "A",
         "keywords": ["黄金", "白银", "铜", "铝", "稀土", "锂", "钴", "镍", "金价"],
+        "exclude": {
+            "黄金": ["黄金周", "黄金期", "黄金时代", "黄金时间", "黄金赛道", "黄金坑", "黄金窗口"],
+            "锂": ["锂电池", "锂电"],
+            "铜": ["青铜", "铜牌"],
+        },
     },
     {
         "sector": "石油石化",
@@ -172,6 +194,9 @@ SECTOR_RULES: list[dict[str, Any]] = [
         "weight": 1.15,
         "priority": "A",
         "keywords": ["军工", "国防", "航天", "航空", "导弹", "舰船", "卫星", "大飞机"],
+        "exclude": {
+            "航空": ["航空公司", "航司", "航班", "航线", "机票", "购票", "旅客", "里程", "客运"],
+        },
     },
     {
         "sector": "电力/公用",
@@ -203,6 +228,7 @@ SECTOR_RULES: list[dict[str, Any]] = [
         "bks": [],
         "weight": 0.85,
         "priority": "A",
+        "context": True,
         "keywords": [
             "降息", "加息", "美联储", "Fed", "CPI", "非农", "衰退", "通胀",
             "人民币", "汇率", "北向资金", "外资", "稳增长", "财政", "专项债",
@@ -222,6 +248,7 @@ SECTOR_RULES: list[dict[str, Any]] = [
         "bks": [],
         "weight": 0.8,
         "priority": "US",
+        "context": True,
         "keywords": [
             "纳斯达克", "标普", "道琼斯", "美股", "标普500", "纳指",
             "科技股大涨", "科技股大跌",

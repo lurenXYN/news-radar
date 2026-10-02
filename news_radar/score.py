@@ -4,13 +4,44 @@ from __future__ import annotations
 
 from typing import Any
 
+from news_radar.config import SUMMARY_ONLY_MULT, WEAK_KEYWORD_MULT
 from news_radar.lexicon import BOARD_BK, ENTITY_MAP, SECTOR_RULES
 from news_radar.sentiment import classify_tone
 
+_CONTEXT_SECTORS = frozenset(str(r["sector"]) for r in SECTOR_RULES if r.get("context"))
 
-def match_sectors(title: str, summary: str = "") -> list[dict[str, Any]]:
-    """Return unique sector hits with keyword, tone, entity, and weight."""
-    text = f"{title or ''}\n{summary or ''}"
+
+def is_context_sector(sector: str) -> bool:
+    """True for background buckets (macro / US) kept out of Top ranking."""
+    return str(sector or "") in _CONTEXT_SECTORS
+
+
+def _placement_mult(needle: str, segments: list[tuple[str, float]]) -> float:
+    """Return the best segment multiplier where ``needle`` appears (0 if absent)."""
+    return max((mult for text, mult in segments if needle in text), default=0.0)
+
+
+def match_sectors(
+    title: str, summary: str = "", tags: list[str] | None = None
+) -> list[dict[str, Any]]:
+    """Return unique sector hits with keyword, tone, entity, and weight.
+
+    A keyword found in the title or the source tags counts in full; found only
+    in the summary it counts at ``SUMMARY_ONLY_MULT``. Rule ``weak`` keywords
+    are further scaled by ``WEAK_KEYWORD_MULT`` and rule ``exclude`` contexts
+    anywhere in the text drop the keyword.
+
+    Args:
+        title: Headline.
+        summary: Body digest.
+        tags: Source-provided subject / stock names (e.g. CLS subjects); they
+            weigh like the title but do not feed the tone classification.
+    """
+    title = title or ""
+    summary = summary or ""
+    tag_text = " ".join(tags or [])
+    text = f"{title}\n{summary}\n{tag_text}"
+    segments = [(title, 1.0), (tag_text, 1.0), (summary, float(SUMMARY_ONLY_MULT))]
     tone = classify_tone(title, summary)
     hits: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -25,18 +56,25 @@ def match_sectors(title: str, summary: str = "") -> list[dict[str, Any]]:
         else:
             weight *= 0.85
         weight *= float(tone.get("mult") or 1.0)
+        excludes = rule.get("exclude") or {}
+        weak = set(rule.get("weak") or [])
         for kw in rule.get("keywords") or []:
             if not kw or kw not in text:
+                continue
+            if any(c in text for c in excludes.get(kw) or []):
                 continue
             key = f"{sector}|{kw}"
             if key in seen:
                 continue
             seen.add(key)
+            mult = _placement_mult(kw, segments)
+            if kw in weak:
+                mult *= float(WEAK_KEYWORD_MULT)
             hits.append(
                 {
                     "sector": sector,
                     "keyword": kw,
-                    "weight": round(weight, 3),
+                    "weight": round(weight * mult, 3),
                     "etfs": list(rule.get("etfs") or []),
                     "bks": list(rule.get("bks") or BOARD_BK.get(sector) or []),
                     "priority": priority,
@@ -57,7 +95,11 @@ def match_sectors(title: str, summary: str = "") -> list[dict[str, Any]]:
         if key in seen:
             continue
         seen.add(key)
-        weight = float(ent.get("weight") or 1.2) * float(tone.get("mult") or 1.0)
+        weight = (
+            float(ent.get("weight") or 1.2)
+            * float(tone.get("mult") or 1.0)
+            * _placement_mult(hit_name, segments)
+        )
         etfs = etfs_for_sector(sector)
         hits.append(
             {

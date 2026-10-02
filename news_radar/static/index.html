@@ -97,6 +97,7 @@
           </thead>
           <tbody id="sectors"></tbody>
         </table>
+        <p class="meta" id="macro"></p>
       </section>
       <section class="card">
         <h2>Server酱 / 参数</h2>
@@ -197,7 +198,9 @@
         + (st.deduped ? (" · 去重 " + st.deduped) : "")
         + " · 板块行情 " + (st.boards || 0)
         + " · 今日推送 " + (st.pushes_today || 0) + "/" + (st.push_daily_max || 8)
+        + ((st.sources_down || []).length ? (" · 源无数据：" + st.sources_down.join("、")) : "")
         + (snap.ok ? "" : " · 异常");
+      stamp.title = Object.entries(st.sources || {}).map(([k, v]) => k + " " + v).join("\n");
       const top3 = document.getElementById("top3");
       const t3 = snap.top3 || [];
       top3.innerHTML = t3.length
@@ -227,6 +230,12 @@
           + "</td><td class='etf'>" + esc(etfs) + "</td>";
         tb.appendChild(tr);
       });
+      const macro = snap.macro || [];
+      document.getElementById("macro").innerHTML = macro.length
+        ? "宏观与外盘（背景，不参与排序）：" + macro.map((r) => "<b>" + esc(r.sector) + "</b> "
+          + Number(r.score || 0).toFixed(1)
+          + " (" + (Number(r.delta || 0) >= 0 ? "+" : "") + Number(r.delta || 0).toFixed(1) + ")").join(" · ")
+        : "";
       const w = document.getElementById("watch");
       const watch = snap.watch || [];
       w.innerHTML = watch.length

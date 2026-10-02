@@ -12,10 +12,11 @@ import httpx
 from news_radar import config as cfg
 from news_radar.boards import confirm_label, fetch_board_quotes, match_board_for_sector
 from news_radar.collect import collect_all
-from news_radar.dedupe import dedupe_articles
+from news_radar.dedupe import dedupe_articles, drop_seen_titles
 from news_radar.calendar import is_trading_day
 from news_radar.db import (
     count_pushes_today,
+    existing_fingerprints,
     heat_map,
     init_db,
     insert_article,
@@ -28,6 +29,7 @@ from news_radar.db import (
     purge_old_articles,
     query_push_log,
     recent_articles_for_sector,
+    recent_titles,
     resonance_backtest_summary,
     save_resonance_outcome,
     save_setting,
@@ -40,12 +42,13 @@ from news_radar.lexicon import overnight_hints_from_text
 from news_radar.notify import (
     digest_compare_line,
     digest_overview_line,
+    format_macro_section,
     format_overnight_sections,
     format_watch_digest,
     notify_serverchan,
 )
 from news_radar.schedule import push_schedule_status
-from news_radar.score import action_hint, etfs_for_sector, match_sectors
+from news_radar.score import action_hint, etfs_for_sector, is_context_sector, match_sectors
 from news_radar.sentiment import classify_tone
 from news_radar.settings import setting
 from news_radar.themes import merge_by_theme
@@ -113,6 +116,32 @@ def _age_decay_mult(published_at: str | None, fetched_at: str | None) -> float:
     return 0.35
 
 
+def filter_new_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Keep only rows worth inserting this refresh.
+
+    Drops rows published before the retention window (they would be purged
+    right after insert), rows whose fingerprint is already stored, and rows
+    whose headline near-duplicates one stored within ``DEDUPE_LOOKBACK_HOURS``.
+
+    Returns:
+        ``(fresh_rows, {"stale", "known", "seen_dup"})``.
+    """
+    cutoff = (datetime.now(CN_TZ) - timedelta(days=int(cfg.ARTICLE_RETENTION_DAYS))).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+    live = [r for r in rows if not (r.get("published_at") and str(r["published_at"]) < cutoff)]
+    known = existing_fingerprints([str(r.get("fingerprint") or "") for r in live])
+    unseen = [r for r in live if r.get("fingerprint") not in known]
+    fresh, seen_dup = drop_seen_titles(
+        unseen, recent_titles(hours=int(cfg.DEDUPE_LOOKBACK_HOURS))
+    )
+    return fresh, {
+        "stale": len(rows) - len(live),
+        "known": len(live) - len(unseen),
+        "seen_dup": seen_dup,
+    }
+
+
 _DIGEST_PREV_KIND = {"midday": ("morning", "盘前"), "evening": ("midday", "午间")}
 _ALSO_WATCH_N = 4
 
@@ -151,6 +180,7 @@ class RadarEngine:
         }
         self._lock = asyncio.Lock()
         self._task: asyncio.Task[None] | None = None
+        self._src_zero: dict[str, int] = {}
 
     def start(self) -> None:
         """Create tables and start the polling task."""
@@ -184,18 +214,30 @@ class RadarEngine:
             new_n = 0
             boards: list[dict[str, Any]] = []
             async with httpx.AsyncClient(timeout=httpx.Timeout(25.0), follow_redirects=True) as client:
-                rows = await collect_all(client)
+                rows, src_counts = await collect_all(client)
                 try:
                     boards = await fetch_board_quotes(client)
                 except Exception as exc:
                     warnings.append(f"boards: {exc}")
+            fetched = len(rows)
+            for name, count in src_counts.items():
+                self._src_zero[name] = 0 if count else self._src_zero.get(name, 0) + 1
+            src_down = [
+                name for name, z in self._src_zero.items() if z >= int(cfg.SOURCE_ZERO_WARN_ROUNDS)
+            ]
+            if src_down:
+                warnings.append("新闻源无数据：" + "、".join(src_down))
             rows, deduped = dedupe_articles(rows)
+            rows, filt = filter_new_rows(rows)
             for row in rows:
-                hits = match_sectors(row.get("title") or "", row.get("summary") or "")
-                decay = _age_decay_mult(row.get("published_at"), row.get("fetched_at"))
-                if decay != 1.0 and hits:
+                hits = match_sectors(
+                    row.get("title") or "", row.get("summary") or "", row.get("tags")
+                )
+                mult = _age_decay_mult(row.get("published_at"), row.get("fetched_at"))
+                mult *= float(cfg.CLS_LEVEL_MULT.get(str(row.get("importance") or ""), 1.0))
+                if mult != 1.0 and hits:
                     for h in hits:
-                        h["weight"] = round(float(h.get("weight") or 1.0) * decay, 3)
+                        h["weight"] = round(float(h.get("weight") or 1.0) * mult, 3)
                 tone = classify_tone(row.get("title") or "", row.get("summary") or "")
                 row["tone"] = tone.get("tone")
                 row["tone_label"] = tone.get("label")
@@ -277,6 +319,8 @@ class RadarEngine:
                 row_out["action_hint"] = action_hint(row_out)
                 sectors.append(row_out)
             sectors.sort(key=_rank_key, reverse=True)
+            macro = [s for s in sectors if is_context_sector(str(s.get("sector") or ""))]
+            sectors = [s for s in sectors if not is_context_sector(str(s.get("sector") or ""))]
 
             # Watch list: rising and/or board-confirmed — what users should stare at.
             watch = [
@@ -297,7 +341,7 @@ class RadarEngine:
 
             pushed = 0
             try:
-                pushed = self._maybe_push(sectors, now=now, boards=boards)
+                pushed = self._maybe_push(sectors, now=now, boards=boards, macro=macro)
             except Exception as exc:
                 log.exception("push failed")
                 warnings.append(f"push: {exc}")
@@ -316,15 +360,19 @@ class RadarEngine:
                 "updated_at": stamp,
                 "trading_day": is_trading_day(now),
                 "sectors": sectors[:30],
+                "macro": macro,
                 "top3": top3,
                 "watch": watch,
                 "articles": list_recent_articles(60),
                 "warnings": warnings,
                 "push_schedule": push_schedule_status(now),
                 "stats": {
-                    "fetched": len(rows) + deduped,
+                    "fetched": fetched,
                     "inserted": new_n,
-                    "deduped": deduped,
+                    "deduped": deduped + filt["seen_dup"],
+                    "stale": filt["stale"],
+                    "sources": src_counts,
+                    "sources_down": src_down,
                     "purged": purged,
                     "pushed": pushed,
                     "boards": len(boards),
@@ -384,6 +432,7 @@ class RadarEngine:
         *,
         now: datetime,
         boards: list[dict[str, Any]] | None = None,
+        macro: list[dict[str, Any]] | None = None,
     ) -> int:
         """Run the three scheduled digests (mute on holidays)."""
         if not bool(setting("serverchan_enabled", False)):
@@ -404,6 +453,7 @@ class RadarEngine:
             title_prefix="新闻雷达 · 盘前总报",
             heading="盘前总报",
             tip="开盘前对照：优先 **共振 / 盘面已动**；「仅新闻」只观察不追。",
+            macro=macro,
         )
         sent += self._push_scheduled_digest(
             sectors,
@@ -415,6 +465,7 @@ class RadarEngine:
             title_prefix="新闻雷达 · 盘中总报",
             heading="盘中总报（13:00）",
             tip="午前对照：热板块是否还在、是否已共振。",
+            macro=macro,
         )
         sent += self._push_scheduled_digest(
             sectors,
@@ -454,8 +505,13 @@ class RadarEngine:
         heading: str,
         tip: str,
         include_overnight: bool = False,
+        macro: list[dict[str, Any]] | None = None,
     ) -> int:
-        """Push at most one digest per kind per calendar day inside its window."""
+        """Push at most one digest per kind per calendar day inside its window.
+
+        ``macro`` background buckets get their own section (never a Top slot);
+        the evening digest carries the overnight transmission section instead.
+        """
         if not _in_hhmm_window(now, start, end):
             return 0
         day = now.strftime("%Y-%m-%d")
@@ -486,6 +542,8 @@ class RadarEngine:
             hints = overnight_hints_from_text(blob, limit=5)
             if hints:
                 extra.extend(format_overnight_sections(hints))
+        elif macro:
+            extra.extend(format_macro_section(macro))
         if not picked and not extra:
             return 0
         as_of = now.strftime("%Y-%m-%d %H:%M")

@@ -169,6 +169,32 @@ def insert_article(row: dict[str, Any]) -> int | None:
             return None
 
 
+def existing_fingerprints(fingerprints: list[str]) -> set[str]:
+    """Return the subset of fingerprints already stored."""
+    wanted = [f for f in dict.fromkeys(fingerprints) if f]
+    found: set[str] = set()
+    with connect() as conn:
+        for i in range(0, len(wanted), 400):
+            chunk = wanted[i : i + 400]
+            marks = ",".join("?" * len(chunk))
+            rows = conn.execute(
+                f"SELECT fingerprint FROM articles WHERE fingerprint IN ({marks})", chunk
+            ).fetchall()
+            found.update(str(r["fingerprint"]) for r in rows)
+    return found
+
+
+def recent_titles(hours: int = 24, limit: int = 3000) -> list[str]:
+    """Return headlines stored within the last ``hours`` (newest first)."""
+    cutoff = (datetime.now(CN_TZ) - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT title FROM articles WHERE fetched_at >= ? ORDER BY id DESC LIMIT ?",
+            (cutoff, int(limit)),
+        ).fetchall()
+    return [str(r["title"] or "") for r in rows]
+
+
 def link_article_sectors(article_id: int, hits: list[dict[str, Any]]) -> None:
     """Attach sector keyword hits to one article."""
     if not hits:

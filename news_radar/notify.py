@@ -316,6 +316,36 @@ def format_watch_digest(
     return title, "\n".join(lines)
 
 
+def format_macro_section(rows: list[dict[str, Any]], *, limit: int = 3) -> list[str]:
+    """Render macro / US background buckets as one digest section (no Top slot).
+
+    Each bucket gets one line: heat, relative heat, keywords and the newest
+    headline.
+    """
+    lines: list[str] = []
+    for row in rows[: max(1, limit)]:
+        sector = str(row.get("sector") or "")
+        if not sector:
+            continue
+        bits = [
+            f"**{sector}**",
+            f"热度 {float(row.get('score') or 0):.1f}",
+            f"相对 {float(row.get('delta') or 0):+.1f}",
+        ]
+        kw = _keyword_text(row, limit=4)
+        if kw:
+            bits.append(kw)
+        arts = row.get("articles") or []
+        head = str((arts[0] or {}).get("title") or "").strip() if arts else ""
+        line = "- " + " · ".join(bits)
+        if head:
+            line += f"\n  - 最新：{head}"
+        lines.append(line)
+    if not lines:
+        return []
+    return ["## 宏观与外盘（背景，不计入 Top）", *lines, ""]
+
+
 def format_overnight_sections(hints: list[dict[str, Any]]) -> list[str]:
     """Split overnight cues into macro / US / commodity style sections."""
     if not hints:

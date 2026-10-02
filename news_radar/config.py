@@ -15,6 +15,16 @@ BROWSER_HOST = "127.0.0.1"
 REFRESH_SECONDS = 300
 # How far back to keep articles (days).
 ARTICLE_RETENTION_DAYS = 14
+# Sector-hit weight multiplier by CLS editorial level (A = red headline, B = bold).
+CLS_LEVEL_MULT = {"A": 1.3, "B": 1.15}
+# Sector matching: a keyword seen only in the summary (not title / source tags)
+# counts at SUMMARY_ONLY_MULT; lexicon ``weak`` keywords are scaled again.
+SUMMARY_ONLY_MULT = 0.5
+WEAK_KEYWORD_MULT = 0.5
+# A source returning nothing this many refreshes in a row is flagged in the UI.
+SOURCE_ZERO_WARN_ROUNDS = 3
+# Cross-refresh near-duplicate check looks back this many hours of stored titles.
+DEDUPE_LOOKBACK_HOURS = 24
 # Heat window for sector ranking (hours).
 HEAT_WINDOW_HOURS = 24
 # Minimum sector score for legacy filters.
