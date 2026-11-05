@@ -308,7 +308,13 @@
         const bt = d.backtest || {};
         let btLine = bt.n
           ? ("共振次日 n=" + bt.n + " · 上涨 " + (bt.hit_rate != null ? bt.hit_rate + "%" : "—")
-            + " · 均 " + (bt.avg_next_pct != null ? ((bt.avg_next_pct >= 0 ? "+" : "") + bt.avg_next_pct + "%") : "—"))
+            + " · 均 " + (bt.avg_next_pct != null ? ((bt.avg_next_pct >= 0 ? "+" : "") + bt.avg_next_pct + "%") : "—")
+            + (bt.excess_hit_rate != null
+              ? (" · 超额上涨 " + bt.excess_hit_rate + "%"
+                + (bt.avg_excess_pct != null
+                  ? (" 均" + (bt.avg_excess_pct >= 0 ? "+" : "") + bt.avg_excess_pct + "%")
+                  : ""))
+              : ""))
           : "共振次日回测：样本不足";
         const by = bt.by_confirm || {};
         const parts = Object.keys(by).map((k) => k + " n=" + by[k].n + " 涨" + (by[k].hit_rate ?? "—") + "%");
@@ -322,6 +328,10 @@
         const avg = ebt.avg_next_pct != null
           ? ((ebt.avg_next_pct >= 0 ? "+" : "") + ebt.avg_next_pct + "%")
           : "—";
+        const exh = ebt.excess_hit_rate != null ? (ebt.excess_hit_rate + "%") : "—";
+        const exa = ebt.avg_excess_pct != null
+          ? ((ebt.avg_excess_pct >= 0 ? "+" : "") + ebt.avg_excess_pct + "%")
+          : "—";
         document.getElementById("effectObserve").textContent =
           "观察窗自 " + (ef.since || "—")
           + " · 约 " + (ef.horizon_days || 7) + " 日"
@@ -331,7 +341,9 @@
           + "（有用率 " + rate + "）"
           + " · 共振次日 n=" + (ebt.n || 0)
           + " 上涨 " + hit
-          + " 均 " + avg;
+          + " 均 " + avg
+          + " · 超额 " + exh
+          + " 均 " + exa;
         const hints = (ef.hints || []).join("；") || (ef.note || "");
         document.getElementById("effectHints").textContent = hints;
       } catch (e) {

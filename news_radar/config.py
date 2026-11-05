@@ -57,6 +57,9 @@ DESK_BOARDS_URL = "http://127.0.0.1:8765/api/export/boards"
 # When True, 「仅新闻」stays out of digest Top / export primary slots
 # (still listed under 其余留意). Override via settings key digest_demote_news_only.
 DIGEST_DEMOTE_NEWS_ONLY = True
+# When True, skip the whole Server酱 digest unless Top has 共振 or 盘面已动.
+# Override via settings key digest_require_board_confirm.
+DIGEST_REQUIRE_BOARD_CONFIRM = True
 
 # Soft usefulness observation window (does not change ranking / gates).
 # After this many calendar days, review feedback + resonance next-day stats

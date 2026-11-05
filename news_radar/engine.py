@@ -106,6 +106,31 @@ def _demote_news_only() -> bool:
     return bool(setting("digest_demote_news_only", cfg.DIGEST_DEMOTE_NEWS_ONLY))
 
 
+def _require_board_confirm() -> bool:
+    """Return True when digests must include resonance / board_lead."""
+    return bool(
+        setting("digest_require_board_confirm", cfg.DIGEST_REQUIRE_BOARD_CONFIRM)
+    )
+
+
+def _board_median_pct(boards: list[dict[str, Any]]) -> float | None:
+    """Median day-move across quoted boards (bench for excess)."""
+    vals: list[float] = []
+    for b in boards:
+        try:
+            if b.get("pct") is not None:
+                vals.append(float(b["pct"]))
+        except (TypeError, ValueError):
+            continue
+    if not vals:
+        return None
+    vals.sort()
+    mid = len(vals) // 2
+    if len(vals) % 2:
+        return round(vals[mid], 4)
+    return round((vals[mid - 1] + vals[mid]) / 2.0, 4)
+
+
 def _pick_digest_rows(
     sectors: list[dict[str, Any]],
     *,
@@ -594,6 +619,18 @@ class RadarEngine:
         )
         if not picked and not include_overnight:
             return 0
+        if _require_board_confirm():
+            confirmed = [
+                r
+                for r in picked
+                if str(r.get("confirm") or "") in ("resonance", "board_lead")
+            ]
+            if not confirmed:
+                log.info(
+                    "digest %s skipped: no resonance/board_lead in Top (require_board_confirm)",
+                    kind,
+                )
+                return 0
         compare = ""
         prev = _DIGEST_PREV_KIND.get(kind)
         if prev:
@@ -710,6 +747,7 @@ class RadarEngine:
             return
         by_bk = {str(b.get("bk") or "").upper(): b for b in boards}
         by_name = {str(b.get("name") or ""): b for b in boards}
+        bench = _board_median_pct(boards)
         for m in pending:
             bk = str(m.get("board_bk") or "").upper()
             sector = str(m.get("sector") or "")
@@ -720,11 +758,18 @@ class RadarEngine:
                         hit = b
                         break
             pct = float(hit["pct"]) if hit and hit.get("pct") is not None else None
+            excess = (
+                round(pct - bench, 4)
+                if pct is not None and bench is not None
+                else None
+            )
             save_resonance_outcome(
                 str(m["trade_date"]),
                 sector,
                 next_date=today,
                 next_board_pct=pct,
+                next_bench_pct=bench,
+                next_excess_pct=excess,
             )
 
     def push_status(self) -> dict[str, Any]:

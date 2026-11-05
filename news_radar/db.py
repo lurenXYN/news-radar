@@ -97,12 +97,28 @@ def init_db() -> None:
                 sector TEXT NOT NULL,
                 next_date TEXT NOT NULL,
                 next_board_pct REAL,
+                next_bench_pct REAL,
+                next_excess_pct REAL,
                 settled_at TEXT NOT NULL,
                 PRIMARY KEY (trade_date, sector)
             );
             """
         )
         _migrate_push_log(conn)
+        _migrate_resonance_outcome(conn)
+
+
+def _migrate_resonance_outcome(conn: sqlite3.Connection) -> None:
+    """Add excess-return columns to resonance_outcome when missing."""
+    cols = {
+        str(r[1]) for r in conn.execute("PRAGMA table_info(resonance_outcome)").fetchall()
+    }
+    for name, sql in (
+        ("next_bench_pct", "ALTER TABLE resonance_outcome ADD COLUMN next_bench_pct REAL"),
+        ("next_excess_pct", "ALTER TABLE resonance_outcome ADD COLUMN next_excess_pct REAL"),
+    ):
+        if name not in cols:
+            conn.execute(sql)
 
 
 def _migrate_push_log(conn: sqlite3.Connection) -> None:
@@ -512,19 +528,34 @@ def save_resonance_outcome(
     *,
     next_date: str,
     next_board_pct: float | None,
+    next_bench_pct: float | None = None,
+    next_excess_pct: float | None = None,
 ) -> None:
-    """Store next-session day-move for one resonance mark."""
+    """Store next-session day-move and excess vs board median for one mark."""
     with connect() as conn:
         conn.execute(
             """
-            INSERT INTO resonance_outcome(trade_date, sector, next_date, next_board_pct, settled_at)
-            VALUES (?,?,?,?,?)
+            INSERT INTO resonance_outcome(
+                trade_date, sector, next_date, next_board_pct,
+                next_bench_pct, next_excess_pct, settled_at
+            )
+            VALUES (?,?,?,?,?,?,?)
             ON CONFLICT(trade_date, sector) DO UPDATE SET
                 next_date=excluded.next_date,
                 next_board_pct=excluded.next_board_pct,
+                next_bench_pct=excluded.next_bench_pct,
+                next_excess_pct=excluded.next_excess_pct,
                 settled_at=excluded.settled_at
             """,
-            (trade_date, sector, next_date, next_board_pct, _now()),
+            (
+                trade_date,
+                sector,
+                next_date,
+                next_board_pct,
+                next_bench_pct,
+                next_excess_pct,
+                _now(),
+            ),
         )
 
 
@@ -577,6 +608,7 @@ def effect_observe_snapshot(days: int = 30) -> dict[str, Any]:
     labeled = int(fb.get("labeled") or 0)
     useful_rate = fb.get("useful_rate")
     hit = bt.get("hit_rate")
+    excess_hit = bt.get("excess_hit_rate")
     hints: list[str] = []
     if labeled < 3:
         hints.append("手标样本少：每条总报点「有用/没用」")
@@ -586,6 +618,10 @@ def effect_observe_snapshot(days: int = 30) -> dict[str, Any]:
         hints.append("手标偏「有用」→ 可继续常开观察")
     if int(bt.get("n") or 0) < 5:
         hints.append("共振次日样本不足，再等几日结算")
+    elif excess_hit is not None and excess_hit < 45:
+        hints.append("共振次日超额偏低 → 多为跟大盘，催化增量弱")
+    elif excess_hit is not None and excess_hit >= 55:
+        hints.append("共振次日超额尚可 → 优先看共振/盘面已动")
     elif hit is not None and hit < 45:
         hints.append("共振次日上涨率偏低 → 「共振」标签参考价值弱")
     elif hit is not None and hit >= 55:
@@ -599,23 +635,26 @@ def effect_observe_snapshot(days: int = 30) -> dict[str, Any]:
             "n": bt.get("n"),
             "hit_rate": bt.get("hit_rate"),
             "avg_next_pct": bt.get("avg_next_pct"),
+            "excess_hit_rate": bt.get("excess_hit_rate"),
+            "avg_excess_pct": bt.get("avg_excess_pct"),
             "by_confirm": bt.get("by_confirm"),
         },
         "hints": hints,
         "note": (
             "效果只作观察：不改买卖闸门。"
-            "手标=你主观是否帮到跟单；共振次日=盘面是否跟上。"
+            "手标=你主观是否帮到跟单；共振次日超额=相对全板块中位数。"
         ),
     }
 
 
 def resonance_backtest_summary(days: int = 30) -> dict[str, Any]:
-    """Aggregate settled resonance → next-day board moves (overall + by confirm)."""
+    """Aggregate settled resonance → next-day absolute and excess board moves."""
     cutoff = (datetime.now(CN_TZ) - timedelta(days=max(1, days))).strftime("%Y-%m-%d")
     with connect() as conn:
         rows = conn.execute(
             """
-            SELECT o.trade_date, o.sector, o.next_date, o.next_board_pct, m.confirm
+            SELECT o.trade_date, o.sector, o.next_date, o.next_board_pct,
+                   o.next_bench_pct, o.next_excess_pct, m.confirm
             FROM resonance_outcome o
             LEFT JOIN resonance_mark m
               ON m.trade_date = o.trade_date AND m.sector = o.sector
@@ -636,6 +675,16 @@ def resonance_backtest_summary(days: int = 30) -> dict[str, Any]:
             if usable
             else None
         )
+        excess_rows = [r for r in usable if r.get("next_excess_pct") is not None]
+        excess_up = [r for r in excess_rows if float(r["next_excess_pct"]) > 0]
+        avg_excess = (
+            round(
+                sum(float(r["next_excess_pct"]) for r in excess_rows) / len(excess_rows),
+                3,
+            )
+            if excess_rows
+            else None
+        )
         return {
             "n": len(usable),
             "up": len(up),
@@ -643,6 +692,11 @@ def resonance_backtest_summary(days: int = 30) -> dict[str, Any]:
             "down": len(down),
             "hit_rate": round(100.0 * len(up) / len(usable), 1) if usable else None,
             "avg_next_pct": avg,
+            "excess_n": len(excess_rows),
+            "excess_hit_rate": (
+                round(100.0 * len(excess_up) / len(excess_rows), 1) if excess_rows else None
+            ),
+            "avg_excess_pct": avg_excess,
         }
 
     by_confirm: dict[str, dict[str, Any]] = {}
