@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
@@ -126,6 +126,12 @@
     <section class="card" style="margin-top:14px">
       <h2>今日只看这 3 个</h2>
       <div id="top3" class="meta">—</div>
+    </section>
+    <section class="card" style="margin-top:14px">
+      <h2>效果观察（是否有用）</h2>
+      <p class="meta" id="effectObserve">加载中…</p>
+      <p class="meta" id="effectHints"></p>
+      <p class="meta">用法：每条总报在下方点「有用/没用」；共振次日由系统自动结算。约一周后对照数字再决定是否调参或关掉推送。</p>
     </section>
     <section class="card" style="margin-top:14px">
       <h2>推送自检 / 历史查询</h2>
@@ -308,8 +314,29 @@
         const parts = Object.keys(by).map((k) => k + " n=" + by[k].n + " 涨" + (by[k].hit_rate ?? "—") + "%");
         if (parts.length) btLine += " · 分类型：" + parts.join(" / ");
         document.getElementById("pushBacktest").textContent = btLine;
+        const ef = d.effect || {};
+        const fb = ef.feedback || {};
+        const ebt = ef.backtest || bt;
+        const rate = fb.useful_rate != null ? (fb.useful_rate + "%") : "—";
+        const hit = ebt.hit_rate != null ? (ebt.hit_rate + "%") : "—";
+        const avg = ebt.avg_next_pct != null
+          ? ((ebt.avg_next_pct >= 0 ? "+" : "") + ebt.avg_next_pct + "%")
+          : "—";
+        document.getElementById("effectObserve").textContent =
+          "观察窗自 " + (ef.since || "—")
+          + " · 约 " + (ef.horizon_days || 7) + " 日"
+          + " · 手标 有用 " + (fb.useful || 0)
+          + " / 没用 " + (fb.useless || 0)
+          + " / 未标 " + (fb.unmarked || 0)
+          + "（有用率 " + rate + "）"
+          + " · 共振次日 n=" + (ebt.n || 0)
+          + " 上涨 " + hit
+          + " 均 " + avg;
+        const hints = (ef.hints || []).join("；") || (ef.note || "");
+        document.getElementById("effectHints").textContent = hints;
       } catch (e) {
         document.getElementById("pushSchedule").textContent = "推送自检加载失败";
+        document.getElementById("effectObserve").textContent = "效果观察加载失败";
       }
       await loadHistory();
     }

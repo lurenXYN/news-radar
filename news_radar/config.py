@@ -54,6 +54,15 @@ REL_HEAT_MIN_DELTA = 1.5
 BOARD_CONFIRM_PCT = 0.8
 # Prefer market-desk soft board export over East Money clist (same VPS).
 DESK_BOARDS_URL = "http://127.0.0.1:8765/api/export/boards"
+# When True, 「仅新闻」stays out of digest Top / export primary slots
+# (still listed under 其余留意). Override via settings key digest_demote_news_only.
+DIGEST_DEMOTE_NEWS_ONLY = True
+
+# Soft usefulness observation window (does not change ranking / gates).
+# After this many calendar days, review feedback + resonance next-day stats
+# before tuning thresholds again.
+EFFECT_OBSERVE_SINCE = "2026-11-05"
+EFFECT_OBSERVE_DAYS = 7
 
 # Server酱³ SendKey (SCT...). Empty = push disabled until set in settings / env.
 # Prefer env NEWS_RADAR_SERVERCHAN_SENDKEY or UI settings over hardcoding.

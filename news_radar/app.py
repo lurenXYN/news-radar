@@ -134,6 +134,14 @@ def backtest_resonance(days: int = Query(default=30, ge=5, le=120)) -> dict[str,
     return resonance_backtest_summary(days)
 
 
+@app.get("/api/effect")
+def effect_observe(days: int = Query(default=30, ge=5, le=120)) -> dict[str, Any]:
+    """Usefulness snapshot: hand feedback + resonance next-day stats."""
+    from news_radar.db import effect_observe_snapshot
+
+    return effect_observe_snapshot(days)
+
+
 @app.get("/api/snapshot")
 def snapshot() -> JSONResponse:
     """Latest sectors + articles."""

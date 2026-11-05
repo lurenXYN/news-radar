@@ -528,6 +528,87 @@ def save_resonance_outcome(
         )
 
 
+def feedback_summary(*, since: str | None = None, days: int = 30) -> dict[str, Any]:
+    """Count useful / useless / unmarked pushes for the observation window."""
+    day_from = str(since or "").strip()[:10]
+    if not day_from:
+        day_from = (datetime.now(CN_TZ) - timedelta(days=max(1, days))).strftime(
+            "%Y-%m-%d"
+        )
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+              COUNT(1) AS total,
+              SUM(CASE WHEN feedback='useful' THEN 1 ELSE 0 END) AS useful,
+              SUM(CASE WHEN feedback='useless' THEN 1 ELSE 0 END) AS useless,
+              SUM(CASE WHEN IFNULL(feedback,'')='' THEN 1 ELSE 0 END) AS unmarked
+            FROM push_log
+            WHERE ok=1 AND created_at >= ?
+            """,
+            (day_from + " 00:00:00",),
+        ).fetchone()
+    total = int(rows["total"] or 0)
+    useful = int(rows["useful"] or 0)
+    useless = int(rows["useless"] or 0)
+    unmarked = int(rows["unmarked"] or 0)
+    labeled = useful + useless
+    return {
+        "ok": True,
+        "since": day_from,
+        "total": total,
+        "useful": useful,
+        "useless": useless,
+        "unmarked": unmarked,
+        "labeled": labeled,
+        "useful_rate": round(100.0 * useful / labeled, 1) if labeled else None,
+    }
+
+
+def effect_observe_snapshot(days: int = 30) -> dict[str, Any]:
+    """Bundle hand-marks + resonance next-day stats for the observe window."""
+    from news_radar import config as cfg
+
+    since = str(getattr(cfg, "EFFECT_OBSERVE_SINCE", "") or "").strip()[:10]
+    horizon = int(getattr(cfg, "EFFECT_OBSERVE_DAYS", 7) or 7)
+    fb = feedback_summary(since=since or None, days=days)
+    bt = resonance_backtest_summary(days=days)
+    # Pass/fail hints stay soft — humans decide; code only surfaces numbers.
+    labeled = int(fb.get("labeled") or 0)
+    useful_rate = fb.get("useful_rate")
+    hit = bt.get("hit_rate")
+    hints: list[str] = []
+    if labeled < 3:
+        hints.append("手标样本少：每条总报点「有用/没用」")
+    elif useful_rate is not None and useful_rate < 40:
+        hints.append("手标偏「没用」→ 考虑减推送或收紧阈值")
+    elif useful_rate is not None and useful_rate >= 60:
+        hints.append("手标偏「有用」→ 可继续常开观察")
+    if int(bt.get("n") or 0) < 5:
+        hints.append("共振次日样本不足，再等几日结算")
+    elif hit is not None and hit < 45:
+        hints.append("共振次日上涨率偏低 → 「共振」标签参考价值弱")
+    elif hit is not None and hit >= 55:
+        hints.append("共振次日上涨率尚可 → 优先看共振/盘面已动")
+    return {
+        "ok": True,
+        "since": since or fb.get("since"),
+        "horizon_days": horizon,
+        "feedback": fb,
+        "backtest": {
+            "n": bt.get("n"),
+            "hit_rate": bt.get("hit_rate"),
+            "avg_next_pct": bt.get("avg_next_pct"),
+            "by_confirm": bt.get("by_confirm"),
+        },
+        "hints": hints,
+        "note": (
+            "效果只作观察：不改买卖闸门。"
+            "手标=你主观是否帮到跟单；共振次日=盘面是否跟上。"
+        ),
+    }
+
+
 def resonance_backtest_summary(days: int = 30) -> dict[str, Any]:
     """Aggregate settled resonance → next-day board moves (overall + by confirm)."""
     cutoff = (datetime.now(CN_TZ) - timedelta(days=max(1, days))).strftime("%Y-%m-%d")

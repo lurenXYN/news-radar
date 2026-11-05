@@ -16,6 +16,7 @@ from news_radar.dedupe import dedupe_articles, drop_seen_titles
 from news_radar.calendar import is_trading_day
 from news_radar.db import (
     count_pushes_today,
+    effect_observe_snapshot,
     existing_fingerprints,
     heat_map,
     init_db,
@@ -51,7 +52,7 @@ from news_radar.schedule import push_schedule_status
 from news_radar.score import action_hint, etfs_for_sector, is_context_sector, match_sectors
 from news_radar.sentiment import classify_tone
 from news_radar.settings import setting
-from news_radar.themes import merge_by_theme
+from news_radar.themes import merge_by_theme, theme_of
 
 log = logging.getLogger("news_radar.engine")
 try:
@@ -60,6 +61,19 @@ try:
     CN_TZ = ZoneInfo("Asia/Shanghai")
 except Exception:  # noqa: BLE001
     CN_TZ = timezone(timedelta(hours=8))
+
+_DIGEST_PREV_KIND = {"midday": ("morning", "盘前"), "evening": ("midday", "午间")}
+_ALSO_WATCH_N = 4
+
+# Confirm rank for digest / export: resonance > board_lead > diverge > news_only.
+_CONFIRM_RANK: dict[str, float] = {
+    "resonance": 40.0,
+    "board_lead": 30.0,
+    "diverge": 20.0,
+    "news_only": 10.0,
+    "neutral": 5.0,
+    "unknown": 0.0,
+}
 
 
 def _parse_hhmm(s: str) -> tuple[int, int]:
@@ -75,26 +89,69 @@ def _in_hhmm_window(now: datetime, start: str, end: str) -> bool:
     return (start_h * 60 + start_m) <= minutes <= (end_h * 60 + end_m)
 
 
+def _rank_key(row: dict[str, Any]) -> tuple[float, float, float, float]:
+    """Sort key: confirm tier, then rising delta, score, board pct."""
+    confirm = str(row.get("confirm") or "")
+    boost = float(_CONFIRM_RANK.get(confirm, 0.0))
+    return (
+        boost,
+        float(row.get("delta") or 0),
+        float(row.get("score") or 0),
+        float(row.get("board_pct") or 0),
+    )
+
+
+def _demote_news_only() -> bool:
+    """Return True when digest/export should keep news_only out of Top slots."""
+    return bool(setting("digest_demote_news_only", cfg.DIGEST_DEMOTE_NEWS_ONLY))
+
+
 def _pick_digest_rows(
-    sectors: list[dict[str, Any]], *, min_score: float, top_n: int
-) -> list[dict[str, Any]]:
-    """Select Top-N rows worth putting in a 总报 (blacklist + theme merge)."""
+    sectors: list[dict[str, Any]],
+    *,
+    min_score: float,
+    detail_n: int,
+    also_n: int = _ALSO_WATCH_N,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Select digest detail rows + 其余留意 (blacklist + theme merge).
+
+    When demote is on, ``news_only`` fills ``also`` only — never the Top detail
+    slots — so pure-news heat cannot crowd out resonance / board_lead.
+    """
     blocked = {
         x.strip()
         for x in str(setting("sector_blacklist", "") or "").replace("，", ",").split(",")
         if x.strip()
     }
-    picked = [
+    candidates = [
         s
         for s in sectors
         if str(s.get("sector") or "") not in blocked
         and (
             float(s.get("score") or 0) >= min_score
-            or s.get("confirm") in ("resonance", "board_lead")
+            or s.get("confirm") in ("resonance", "board_lead", "diverge")
             or s.get("rising")
         )
     ]
-    return merge_by_theme(picked, limit=max(1, top_n))
+    candidates.sort(key=_rank_key, reverse=True)
+    detail_n = max(1, int(detail_n))
+    also_n = max(0, int(also_n))
+    if not _demote_news_only():
+        pool = merge_by_theme(candidates, limit=detail_n + also_n)
+        return pool[:detail_n], pool[detail_n:]
+
+    primary = [s for s in candidates if str(s.get("confirm") or "") != "news_only"]
+    secondary = [s for s in candidates if str(s.get("confirm") or "") == "news_only"]
+    picked = merge_by_theme(primary, limit=detail_n)
+    seen_themes = {theme_of(str(r.get("sector") or "")) for r in picked}
+    also_src = [
+        s
+        for s in secondary
+        if theme_of(str(s.get("sector") or "")) not in seen_themes
+    ]
+    # If primary is short, still do not promote news_only into Top.
+    also = merge_by_theme(also_src, limit=also_n)
+    return picked, also
 
 
 def _age_decay_mult(published_at: str | None, fetched_at: str | None) -> float:
@@ -142,27 +199,9 @@ def filter_new_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], d
     }
 
 
-_DIGEST_PREV_KIND = {"midday": ("morning", "盘前"), "evening": ("midday", "午间")}
-_ALSO_WATCH_N = 4
-
-
 def _digest_picks_key(kind: str, day: str) -> str:
     """Settings key that remembers which sectors a digest listed."""
     return f"digest_picks:{kind}:{day}"
-
-
-def _rank_key(row: dict[str, Any]) -> tuple[float, float, float]:
-    """Sort: resonance first, then rising delta, then absolute score."""
-    confirm = str(row.get("confirm") or "")
-    boost = {
-        "resonance": 30.0,
-        "board_lead": 20.0,
-        "news_only": 5.0,
-        "diverge": 2.0,
-        "neutral": 1.0,
-        "unknown": 0.0,
-    }.get(confirm, 0.0)
-    return (boost + float(row.get("delta") or 0), float(row.get("score") or 0), float(row.get("board_pct") or 0))
 
 
 class RadarEngine:
@@ -323,12 +362,17 @@ class RadarEngine:
             sectors = [s for s in sectors if not is_context_sector(str(s.get("sector") or ""))]
 
             # Watch list: rising and/or board-confirmed — what users should stare at.
+            # When demote is on, high-score news_only stays off the primary watch strip.
             watch = [
                 s
                 for s in sectors
                 if s.get("rising")
-                or s.get("confirm") in ("resonance", "board_lead")
-                or (float(s.get("score") or 0) >= 6 and s.get("confirm") == "news_only")
+                or s.get("confirm") in ("resonance", "board_lead", "diverge")
+                or (
+                    not _demote_news_only()
+                    and float(s.get("score") or 0) >= 6
+                    and s.get("confirm") == "news_only"
+                )
             ][:12]
             top3 = merge_by_theme(
                 [
@@ -388,7 +432,29 @@ class RadarEngine:
     def export_sectors(self, *, limit: int = 8) -> dict[str, Any]:
         """Compact payload for 牛来 / external consumers."""
         snap = self.snapshot or {}
-        rows = list(snap.get("watch") or snap.get("sectors") or [])[: max(1, limit)]
+        limit_n = max(1, int(limit))
+        sectors = list(snap.get("sectors") or [])
+        watch = list(snap.get("watch") or [])
+        if _demote_news_only():
+            # Prefer board-confirmed / rising; append news_only only to fill.
+            primary = [
+                r
+                for r in sectors
+                if str(r.get("confirm") or "") != "news_only"
+                and (
+                    r.get("rising")
+                    or r.get("confirm") in ("resonance", "board_lead", "diverge")
+                    or float(r.get("score") or 0) >= float(cfg.MORNING_PUSH_MIN_SCORE)
+                )
+            ]
+            secondary = [
+                r for r in sectors if str(r.get("confirm") or "") == "news_only"
+            ]
+            primary.sort(key=_rank_key, reverse=True)
+            secondary.sort(key=_rank_key, reverse=True)
+            rows = (primary + secondary)[:limit_n]
+        else:
+            rows = (watch or sectors)[:limit_n]
         out = []
         for r in rows:
             out.append(
@@ -520,9 +586,12 @@ class RadarEngine:
             return 0
         min_score = float(setting("morning_push_min_score", cfg.MORNING_PUSH_MIN_SCORE))
         top_n = int(setting("morning_push_top_n", cfg.MORNING_PUSH_TOP_N))
-        pool = _pick_digest_rows(sectors, min_score=min_score, top_n=top_n + _ALSO_WATCH_N)
-        picked = pool[:top_n]
-        also_watch = pool[top_n:]
+        picked, also_watch = _pick_digest_rows(
+            sectors,
+            min_score=min_score,
+            detail_n=top_n,
+            also_n=_ALSO_WATCH_N,
+        )
         if not picked and not include_overnight:
             return 0
         compare = ""
@@ -666,6 +735,7 @@ class RadarEngine:
             "schedule": push_schedule_status(now),
             "recent": list_push_log(20),
             "backtest": resonance_backtest_summary(30),
+            "effect": effect_observe_snapshot(30),
             "serverchan_enabled": bool(setting("serverchan_enabled", False)),
             "pushes_today": count_pushes_today(ok_only=True),
             "push_daily_max": int(setting("push_daily_max", cfg.PUSH_DAILY_MAX)),
