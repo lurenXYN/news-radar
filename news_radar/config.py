@@ -67,6 +67,14 @@ DIGEST_REQUIRE_BOARD_CONFIRM = True
 EFFECT_OBSERVE_SINCE = "2026-11-05"
 EFFECT_OBSERVE_DAYS = 7
 
+# Event clustering: merge same-story reprints into one cluster.
+# Articles always get a cluster_id when enabled; heat ranking stays on article
+# weights until EVENT_CLUSTER_HEAT is flipped on after dual-track review.
+EVENT_CLUSTER_ENABLED = True
+EVENT_CLUSTER_HEAT = False  # when True, sector score uses event_score
+EVENT_CLUSTER_HOURS = 24
+EVENT_CLUSTER_SIM = 0.45  # title bigram Jaccard to join an existing cluster
+
 # Server酱³ SendKey (SCT...). Empty = push disabled until set in settings / env.
 # Prefer env NEWS_RADAR_SERVERCHAN_SENDKEY or UI settings over hardcoding.
 SERVERCHAN_SENDKEY = ""

@@ -6,7 +6,7 @@ import json
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any, Iterator
+from typing import Any, Iterable, Iterator
 
 from news_radar.config import DATA_DIR, DB_PATH
 
@@ -102,10 +102,26 @@ def init_db() -> None:
                 settled_at TEXT NOT NULL,
                 PRIMARY KEY (trade_date, sector)
             );
+
+            CREATE TABLE IF NOT EXISTS event_cluster (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                first_seen TEXT NOT NULL,
+                last_seen TEXT NOT NULL,
+                n_articles INTEGER NOT NULL DEFAULT 1,
+                n_sources INTEGER NOT NULL DEFAULT 1,
+                sectors TEXT DEFAULT '',
+                sources TEXT DEFAULT '',
+                etype TEXT DEFAULT '',
+                etype_json TEXT DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS idx_event_cluster_last
+                ON event_cluster(last_seen);
             """
         )
         _migrate_push_log(conn)
         _migrate_resonance_outcome(conn)
+        _migrate_article_cluster(conn)
 
 
 def _migrate_resonance_outcome(conn: sqlite3.Connection) -> None:
@@ -119,6 +135,16 @@ def _migrate_resonance_outcome(conn: sqlite3.Connection) -> None:
     ):
         if name not in cols:
             conn.execute(sql)
+
+
+def _migrate_article_cluster(conn: sqlite3.Connection) -> None:
+    """Add articles.cluster_id when missing."""
+    cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(articles)").fetchall()}
+    if "cluster_id" not in cols:
+        conn.execute("ALTER TABLE articles ADD COLUMN cluster_id INTEGER")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_articles_cluster ON articles(cluster_id)"
+    )
 
 
 def _migrate_push_log(conn: sqlite3.Connection) -> None:
@@ -270,11 +296,16 @@ def sector_heat(hours: int = 24) -> list[dict[str, Any]]:
 
 
 def sector_heat_between(start: datetime, end: datetime) -> list[dict[str, Any]]:
-    """Aggregate sector scores for articles in [start, end)."""
+    """Aggregate sector scores for articles in [start, end).
+
+    Each row carries both article-sum ``raw_score`` and event-cluster
+    ``event_score`` (max weight per cluster, then sum). Ranking callers pick
+    which field to use via ``EVENT_CLUSTER_HEAT``.
+    """
     start_s = start.strftime("%Y-%m-%d %H:%M:%S")
     end_s = end.strftime("%Y-%m-%d %H:%M:%S")
     with connect() as conn:
-        rows = conn.execute(
+        article_rows = conn.execute(
             """
             SELECT
                 s.sector AS sector,
@@ -290,18 +321,187 @@ def sector_heat_between(start: datetime, end: datetime) -> list[dict[str, Any]]:
             """,
             (start_s, end_s),
         ).fetchall()
+        event_rows = conn.execute(
+            """
+            SELECT
+                sector,
+                COUNT(1) AS event_count,
+                SUM(max_w) AS event_score,
+                SUM(article_n) AS cluster_article_count,
+                SUM(CASE WHEN source_n >= 2 THEN 1 ELSE 0 END) AS multi_source_events,
+                MAX(source_n) AS max_sources
+            FROM (
+                SELECT
+                    s.sector AS sector,
+                    COALESCE(
+                        CAST(a.cluster_id AS TEXT),
+                        'a:' || CAST(a.id AS TEXT)
+                    ) AS eid,
+                    MAX(s.weight) AS max_w,
+                    COUNT(DISTINCT a.id) AS article_n,
+                    COUNT(DISTINCT a.source) AS source_n
+                FROM article_sectors s
+                JOIN articles a ON a.id = s.article_id
+                WHERE COALESCE(a.published_at, a.fetched_at) >= ?
+                  AND COALESCE(a.published_at, a.fetched_at) < ?
+                GROUP BY s.sector, eid
+            )
+            GROUP BY sector
+            """,
+            (start_s, end_s),
+        ).fetchall()
+    by_event = {str(r["sector"]): dict(r) for r in event_rows}
     out: list[dict[str, Any]] = []
-    for r in rows:
+    for r in article_rows:
         d = dict(r)
+        sector = str(d.get("sector") or "")
+        ev = by_event.get(sector) or {}
         d["raw_score"] = round(float(d.get("raw_score") or 0), 2)
         d["article_count"] = int(d.get("article_count") or 0)
+        d["event_score"] = round(float(ev.get("event_score") or 0), 2)
+        d["event_count"] = int(ev.get("event_count") or 0)
+        d["multi_source_events"] = int(ev.get("multi_source_events") or 0)
+        d["max_sources"] = int(ev.get("max_sources") or 0)
         out.append(d)
     return out
 
 
-def heat_map(rows: list[dict[str, Any]]) -> dict[str, float]:
-    """Map sector → raw_score."""
-    return {str(r["sector"]): float(r.get("raw_score") or 0) for r in rows}
+def heat_map(rows: list[dict[str, Any]], *, score_key: str = "raw_score") -> dict[str, float]:
+    """Map sector → score field (``raw_score`` or ``event_score``)."""
+    key = score_key if score_key in ("raw_score", "event_score") else "raw_score"
+    return {str(r["sector"]): float(r.get(key) or 0) for r in rows}
+
+
+def list_recent_clusters(hours: int = 24, limit: int = 500) -> list[dict[str, Any]]:
+    """Return recent event clusters with sector sets for assign_cluster."""
+    cutoff = (datetime.now(CN_TZ) - timedelta(hours=max(1, hours))).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, title, sectors, sources, n_articles, n_sources, last_seen
+            FROM event_cluster
+            WHERE last_seen >= ?
+            ORDER BY last_seen DESC
+            LIMIT ?
+            """,
+            (cutoff, max(1, min(int(limit), 2000))),
+        ).fetchall()
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        sectors = {
+            p.strip()
+            for p in str(r["sectors"] or "").replace("，", ",").split(",")
+            if p.strip()
+        }
+        sources = {
+            p.strip()
+            for p in str(r["sources"] or "").replace("，", ",").split(",")
+            if p.strip()
+        }
+        out.append(
+            {
+                "id": int(r["id"]),
+                "title": str(r["title"] or ""),
+                "sectors": sectors,
+                "sources": sources,
+                "n_articles": int(r["n_articles"] or 0),
+                "n_sources": int(r["n_sources"] or 0),
+                "last_seen": str(r["last_seen"] or ""),
+            }
+        )
+    return out
+
+
+def attach_article_cluster(
+    article_id: int,
+    *,
+    title: str,
+    sectors: Iterable[str] | None = None,
+    source: str = "",
+) -> int | None:
+    """Assign ``article_id`` to an event cluster; create one when needed.
+
+    Returns the cluster id, or None when clustering is disabled / article missing.
+    """
+    from news_radar import config as cfg
+    from news_radar.dedupe import assign_cluster
+
+    if not bool(getattr(cfg, "EVENT_CLUSTER_ENABLED", True)):
+        return None
+    sec = {str(x).strip() for x in (sectors or []) if str(x).strip()}
+    src = str(source or "").strip()
+    hours = int(getattr(cfg, "EVENT_CLUSTER_HOURS", 24) or 24)
+    thresh = float(getattr(cfg, "EVENT_CLUSTER_SIM", 0.45) or 0.45)
+    recent = list_recent_clusters(hours=hours)
+    matched = assign_cluster(title, sec, recent, threshold=thresh)
+    stamp = _now()
+    with connect() as conn:
+        if matched is not None:
+            row = conn.execute(
+                "SELECT title, sectors, sources, n_articles FROM event_cluster WHERE id=?",
+                (int(matched),),
+            ).fetchone()
+            if row is None:
+                matched = None
+            else:
+                old_sec = {
+                    p.strip()
+                    for p in str(row["sectors"] or "").replace("，", ",").split(",")
+                    if p.strip()
+                }
+                old_src = {
+                    p.strip()
+                    for p in str(row["sources"] or "").replace("，", ",").split(",")
+                    if p.strip()
+                }
+                new_sec = sorted(old_sec | sec)
+                new_src = sorted(old_src | ({src} if src else set()))
+                conn.execute(
+                    """
+                    UPDATE event_cluster
+                    SET last_seen=?, n_articles=n_articles+1,
+                        n_sources=?, sectors=?, sources=?
+                    WHERE id=?
+                    """,
+                    (
+                        stamp,
+                        len(new_src),
+                        ",".join(new_sec),
+                        ",".join(new_src),
+                        int(matched),
+                    ),
+                )
+                conn.execute(
+                    "UPDATE articles SET cluster_id=? WHERE id=?",
+                    (int(matched), int(article_id)),
+                )
+                return int(matched)
+
+        cur = conn.execute(
+            """
+            INSERT INTO event_cluster(
+                title, first_seen, last_seen, n_articles, n_sources, sectors, sources
+            ) VALUES (?,?,?,?,?,?,?)
+            """,
+            (
+                str(title or "")[:200],
+                stamp,
+                stamp,
+                1,
+                1 if src else 0,
+                ",".join(sorted(sec)),
+                src,
+            ),
+        )
+        cid = int(cur.lastrowid or 0)
+        if cid:
+            conn.execute(
+                "UPDATE articles SET cluster_id=? WHERE id=?",
+                (cid, int(article_id)),
+            )
+        return cid or None
 
 
 def recent_articles_for_sector(sector: str, hours: int = 24, limit: int = 8) -> list[dict[str, Any]]:

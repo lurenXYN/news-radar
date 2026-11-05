@@ -15,6 +15,7 @@ from news_radar.collect import collect_all
 from news_radar.dedupe import dedupe_articles, drop_seen_titles
 from news_radar.calendar import is_trading_day
 from news_radar.db import (
+    attach_article_cluster,
     count_pushes_today,
     effect_observe_snapshot,
     existing_fingerprints,
@@ -311,6 +312,15 @@ class RadarEngine:
                 new_n += 1
                 if hits:
                     link_article_sectors(aid, hits)
+                try:
+                    attach_article_cluster(
+                        aid,
+                        title=str(row.get("title") or ""),
+                        sectors=[str(h.get("sector") or "") for h in hits],
+                        source=str(row.get("source") or ""),
+                    )
+                except Exception as exc:
+                    warnings.append(f"cluster: {type(exc).__name__}")
             try:
                 purged = purge_old_articles(int(cfg.ARTICLE_RETENTION_DAYS))
             except Exception as exc:
@@ -319,18 +329,22 @@ class RadarEngine:
 
             hours = int(setting("heat_window_hours", cfg.HEAT_WINDOW_HOURS))
             now = datetime.now(CN_TZ)
+            use_event = bool(
+                setting("event_cluster_heat", getattr(cfg, "EVENT_CLUSTER_HEAT", False))
+            )
+            score_key = "event_score" if use_event else "raw_score"
             cur_rows = sector_heat(hours=hours)
             prev_rows = sector_heat_between(now - timedelta(hours=hours * 2), now - timedelta(hours=hours))
             hour_rows = sector_heat_between(now - timedelta(hours=1), now)
             hour_prev = sector_heat_between(now - timedelta(hours=2), now - timedelta(hours=1))
-            prev_map = heat_map(prev_rows)
-            hour_map = heat_map(hour_rows)
-            hour_prev_map = heat_map(hour_prev)
+            prev_map = heat_map(prev_rows, score_key=score_key)
+            hour_map = heat_map(hour_rows, score_key=score_key)
+            hour_prev_map = heat_map(hour_prev, score_key=score_key)
 
             sectors: list[dict[str, Any]] = []
             for h in cur_rows:
                 sector = str(h["sector"])
-                score = float(h.get("raw_score") or 0)
+                score = float(h.get(score_key) or h.get("raw_score") or 0)
                 prev = float(prev_map.get(sector) or 0)
                 delta = round(score - prev, 2)
                 delta_1h = round(
@@ -365,6 +379,11 @@ class RadarEngine:
                     "etfs": etfs,
                     "articles": arts,
                     "score": score,
+                    "score_mode": score_key,
+                    "raw_score": float(h.get("raw_score") or 0),
+                    "event_score": float(h.get("event_score") or 0),
+                    "event_count": int(h.get("event_count") or 0),
+                    "multi_source_events": int(h.get("multi_source_events") or 0),
                     "prev_score": prev,
                     "delta": delta,
                     "delta_1h": delta_1h,

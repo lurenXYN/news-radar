@@ -258,9 +258,18 @@ def format_watch_digest(
                 heat += f" · 近1h `{float(delta_1h):+.1f}`"
             except (TypeError, ValueError):
                 pass
+        ev_n = int(row.get("event_count") or 0)
         cnt = int(row.get("article_count") or 0)
-        if cnt:
-            heat += f" · 新闻 {cnt} 条"
+        multi = int(row.get("multi_source_events") or 0)
+        if ev_n or cnt:
+            bits = []
+            if ev_n:
+                bits.append(f"事件 {ev_n}")
+            if cnt:
+                bits.append(f"篇 {cnt}")
+            if multi:
+                bits.append(f"多源 {multi}")
+            heat += " · " + " · ".join(bits)
         lines.append(heat)
         board_line = f"- 盘面 `{_pct_text(row.get('board_pct'))}`"
         if board:

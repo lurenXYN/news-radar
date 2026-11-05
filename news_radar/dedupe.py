@@ -1,4 +1,4 @@
-"""Near-duplicate headline collapse (洗稿)."""
+"""Near-duplicate headline collapse (洗稿) and same-story event clustering."""
 
 from __future__ import annotations
 
@@ -77,3 +77,49 @@ def drop_seen_titles(
             continue
         kept.append(row)
     return kept, dropped
+
+
+def assign_cluster(
+    title: str,
+    sectors: Iterable[str],
+    recent: list[dict[str, Any]],
+    *,
+    threshold: float = 0.45,
+) -> int | None:
+    """Return an existing cluster id to join, or None to create a new cluster.
+
+    A candidate must share at least one sector with ``sectors`` (or both must
+    have an empty sector set) and clear the title similarity threshold. Among
+    matches, the highest similarity wins (ties → newest / first in list).
+
+    Args:
+        title: Headline of the new article.
+        sectors: Sector names hit by the article.
+        recent: Cluster dicts with ``id``, ``title``, and ``sectors`` (iterable).
+        threshold: Bigram Jaccard floor for joining (lower than wash-稿 dedupe).
+
+    Returns:
+        Existing ``cluster_id``, or ``None`` when no suitable cluster exists.
+    """
+    sec = {str(x).strip() for x in sectors if str(x).strip()}
+    grams = _bigrams(_norm(title))
+    if not grams:
+        return None
+    best_id: int | None = None
+    best_sim = -1.0
+    for row in recent:
+        try:
+            cid = int(row.get("id"))
+        except (TypeError, ValueError):
+            continue
+        other = {str(x).strip() for x in (row.get("sectors") or []) if str(x).strip()}
+        if sec and other and not (sec & other):
+            continue
+        if not sec and other:
+            # Unmapped article should not join a mapped cluster.
+            continue
+        sim = _jaccard(grams, _bigrams(_norm(str(row.get("title") or ""))))
+        if sim >= threshold and sim > best_sim:
+            best_sim = sim
+            best_id = cid
+    return best_id

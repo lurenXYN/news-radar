@@ -225,12 +225,18 @@
         const tone = row.tone_label || "—";
         const hint = row.action_hint ? ("<div class='meta'>" + esc(row.action_hint) + "</div>") : "";
         const warn = row.bk_warn ? "<span class='warn'> · BK未精确</span>" : "";
+        const evMeta = (row.event_count || row.article_count)
+          ? ("<div class='meta'>事件 " + (row.event_count || 0)
+            + " · 篇 " + (row.article_count || 0)
+            + (row.multi_source_events ? (" · 多源 " + row.multi_source_events) : "")
+            + "</div>")
+          : "";
         tr.innerHTML = "<td><strong>" + esc(row.sector) + "</strong>" + warn
           + tipArts(row.articles)
           + hint
           + "</td><td>" + esc(row.confirm_label || "—")
           + "</td><td>" + esc(tone)
-          + "</td><td class='score'>" + Number(row.score || 0).toFixed(1)
+          + "</td><td class='score'>" + Number(row.score || 0).toFixed(1) + evMeta
           + "</td><td>" + delta
           + "</td><td>" + pct
           + "</td><td class='etf'>" + esc(etfs) + "</td>";
