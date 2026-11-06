@@ -759,6 +759,78 @@ def save_resonance_outcome(
         )
 
 
+def backfill_resonance_excess(*, limit: int = 400) -> int:
+    """Fill missing next_bench/excess using median next_board_pct per next_date.
+
+    Historical rows often have absolute day-move only (pre-excess feature).
+    Without archived full-board quotes, the same-day median of settled sector
+    moves is a stable proxy for the board-median bench.
+
+    Returns:
+        Number of outcome rows updated.
+    """
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT trade_date, sector, next_date, next_board_pct,
+                   next_bench_pct, next_excess_pct
+            FROM resonance_outcome
+            WHERE next_board_pct IS NOT NULL
+              AND (next_excess_pct IS NULL OR next_bench_pct IS NULL)
+            ORDER BY next_date DESC, trade_date DESC
+            LIMIT ?
+            """,
+            (max(1, int(limit)),),
+        ).fetchall()
+        if not rows:
+            return 0
+        by_next: dict[str, list[float]] = {}
+        for r in conn.execute(
+            """
+            SELECT next_date, next_board_pct
+            FROM resonance_outcome
+            WHERE next_board_pct IS NOT NULL AND IFNULL(next_date,'') != ''
+            """
+        ).fetchall():
+            day = str(r["next_date"] or "")[:10]
+            try:
+                by_next.setdefault(day, []).append(float(r["next_board_pct"]))
+            except (TypeError, ValueError):
+                continue
+
+        def _median(vals: list[float]) -> float | None:
+            if not vals:
+                return None
+            s = sorted(vals)
+            mid = len(s) // 2
+            if len(s) % 2:
+                return float(s[mid])
+            return round((s[mid - 1] + s[mid]) / 2.0, 4)
+
+        n = 0
+        stamp = _now()
+        for r in rows:
+            day = str(r["next_date"] or "")[:10]
+            bench = _median(by_next.get(day) or [])
+            if bench is None:
+                continue
+            try:
+                pct = float(r["next_board_pct"])
+            except (TypeError, ValueError):
+                continue
+            excess = round(pct - bench, 4)
+            conn.execute(
+                """
+                UPDATE resonance_outcome
+                SET next_bench_pct=?, next_excess_pct=?, settled_at=?
+                WHERE trade_date=? AND sector=?
+                """,
+                (bench, excess, stamp, r["trade_date"], r["sector"]),
+            )
+            n += 1
+        return n
+
+
 def feedback_summary(*, since: str | None = None, days: int = 30) -> dict[str, Any]:
     """Count useful / useless / unmarked pushes for the observation window."""
     day_from = str(since or "").strip()[:10]
@@ -808,24 +880,29 @@ def effect_observe_snapshot(days: int = 30) -> dict[str, Any]:
     labeled = int(fb.get("labeled") or 0)
     useful_rate = fb.get("useful_rate")
     hit = bt.get("hit_rate")
+    excess_n = int(bt.get("excess_n") or 0)
     excess_hit = bt.get("excess_hit_rate")
     hints: list[str] = []
     if labeled < 3:
-        hints.append("手标样本少：每条总报点「有用/没用」")
+        hints.append("手标样本少：打开本页「推送历史」给总报点「有用/没用」")
     elif useful_rate is not None and useful_rate < 40:
         hints.append("手标偏「没用」→ 考虑减推送或收紧阈值")
     elif useful_rate is not None and useful_rate >= 60:
         hints.append("手标偏「有用」→ 可继续常开观察")
     if int(bt.get("n") or 0) < 5:
         hints.append("共振次日样本不足，再等几日结算")
-    elif excess_hit is not None and excess_hit < 45:
+    elif excess_n >= 10 and excess_hit is not None and excess_hit < 45:
         hints.append("共振次日超额偏低 → 多为跟大盘，催化增量弱")
-    elif excess_hit is not None and excess_hit >= 55:
+    elif excess_n >= 10 and excess_hit is not None and excess_hit >= 55:
         hints.append("共振次日超额尚可 → 优先看共振/盘面已动")
     elif hit is not None and hit < 45:
         hints.append("共振次日上涨率偏低 → 「共振」标签参考价值弱")
     elif hit is not None and hit >= 55:
         hints.append("共振次日上涨率尚可 → 优先看共振/盘面已动")
+    if 0 < excess_n < 10:
+        hints.append(
+            f"超额样本不足（{excess_n}/10）：先看绝对上涨率，回填后再判超额"
+        )
     return {
         "ok": True,
         "since": since or fb.get("since"),
@@ -835,14 +912,16 @@ def effect_observe_snapshot(days: int = 30) -> dict[str, Any]:
             "n": bt.get("n"),
             "hit_rate": bt.get("hit_rate"),
             "avg_next_pct": bt.get("avg_next_pct"),
-            "excess_hit_rate": bt.get("excess_hit_rate"),
-            "avg_excess_pct": bt.get("avg_excess_pct"),
+            "excess_n": excess_n,
+            "excess_hit_rate": bt.get("excess_hit_rate") if excess_n >= 10 else None,
+            "avg_excess_pct": bt.get("avg_excess_pct") if excess_n >= 10 else None,
             "by_confirm": bt.get("by_confirm"),
         },
         "hints": hints,
         "note": (
             "效果只作观察：不改买卖闸门。"
             "手标=你主观是否帮到跟单；共振次日超额=相对全板块中位数。"
+            "超额 hint 需 excess_n≥10。"
         ),
     }
 

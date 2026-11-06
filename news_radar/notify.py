@@ -321,6 +321,9 @@ def format_watch_digest(
         lines.extend(extra_sections)
         lines.append("")
     lines.append("---")
+    lines.append(
+        "_手标：打开新闻雷达页 → 推送历史 → 点「有用/没用」（效果观察窗需要样本）_"
+    )
     lines.append("_news-radar · 软提示，不构成投资建议_")
     return title, "\n".join(lines)
 

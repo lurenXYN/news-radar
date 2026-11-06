@@ -84,13 +84,13 @@ def assign_cluster(
     sectors: Iterable[str],
     recent: list[dict[str, Any]],
     *,
-    threshold: float = 0.45,
+    threshold: float = 0.55,
 ) -> int | None:
     """Return an existing cluster id to join, or None to create a new cluster.
 
-    A candidate must share at least one sector with ``sectors`` (or both must
-    have an empty sector set) and clear the title similarity threshold. Among
-    matches, the highest similarity wins (ties → newest / first in list).
+    Requires a non-empty sector intersection (unmapped articles always open a
+    new cluster) and a title similarity at/above ``threshold``. Among matches,
+    the highest similarity wins.
 
     Args:
         title: Headline of the new article.
@@ -103,7 +103,9 @@ def assign_cluster(
     """
     sec = {str(x).strip() for x in sectors if str(x).strip()}
     grams = _bigrams(_norm(title))
-    if not grams:
+    if not grams or not sec:
+        # No sector → do not merge by title alone (was creating 1:1 noise clusters
+        # and letting wrong-sector siblings pollute cluster.sectors).
         return None
     best_id: int | None = None
     best_sim = -1.0
@@ -113,10 +115,7 @@ def assign_cluster(
         except (TypeError, ValueError):
             continue
         other = {str(x).strip() for x in (row.get("sectors") or []) if str(x).strip()}
-        if sec and other and not (sec & other):
-            continue
-        if not sec and other:
-            # Unmapped article should not join a mapped cluster.
+        if not other or not (sec & other):
             continue
         sim = _jaccard(grams, _bigrams(_norm(str(row.get("title") or ""))))
         if sim >= threshold and sim > best_sim:

@@ -117,6 +117,38 @@ def match_sectors(
     return hits
 
 
+def primary_sector_names(
+    hits: list[dict[str, Any]], *, limit: int = 3
+) -> list[str]:
+    """Pick strongest unique sectors for clustering (drop weak tail noise).
+
+    Prefers title/tag hits over summary-only when weights tie. Empty when
+    ``hits`` has nothing usable — callers should then skip cluster merge.
+    """
+    ranked = sorted(
+        (h for h in hits if str(h.get("sector") or "").strip()),
+        key=lambda h: (
+            float(h.get("weight") or 0),
+            1 if str(h.get("via") or "") in ("keyword", "entity") else 0,
+        ),
+        reverse=True,
+    )
+    out: list[str] = []
+    seen: set[str] = set()
+    for h in ranked:
+        sector = str(h.get("sector") or "").strip()
+        if not sector or sector in seen:
+            continue
+        # Drop very weak summary-only hits when stronger sectors already picked.
+        if out and float(h.get("weight") or 0) < 0.55:
+            continue
+        seen.add(sector)
+        out.append(sector)
+        if len(out) >= max(1, int(limit)):
+            break
+    return out
+
+
 def etfs_for_sector(sector: str) -> list[str]:
     """Return ETF codes configured for one sector."""
     for rule in SECTOR_RULES:

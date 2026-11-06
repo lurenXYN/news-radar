@@ -131,7 +131,8 @@
       <h2>效果观察（是否有用）</h2>
       <p class="meta" id="effectObserve">加载中…</p>
       <p class="meta" id="effectHints"></p>
-      <p class="meta">用法：每条总报在下方点「有用/没用」；共振次日由系统自动结算。约一周后对照数字再决定是否调参或关掉推送。</p>
+      <p class="meta" id="effectFbNudge" style="display:none;color:#b45309"></p>
+      <p class="meta">用法：下方「推送历史」每条总报点 <b>有用/没用</b>；共振次日由系统自动结算。超额 hint 需 excess_n≥10。约一周后对照数字再决定是否调参。</p>
     </section>
     <section class="card" style="margin-top:14px">
       <h2>推送自检 / 历史查询</h2>
@@ -348,10 +349,19 @@
           + " · 共振次日 n=" + (ebt.n || 0)
           + " 上涨 " + hit
           + " 均 " + avg
-          + " · 超额 " + exh
+          + " · 超额 n=" + (ebt.excess_n || 0)
+          + " 命中 " + exh
           + " 均 " + exa;
         const hints = (ef.hints || []).join("；") || (ef.note || "");
         document.getElementById("effectHints").textContent = hints;
+        const nudge = document.getElementById("effectFbNudge");
+        if ((fb.unmarked || 0) > 0 && (fb.labeled || 0) < 3) {
+          nudge.style.display = "";
+          nudge.textContent = "还有 " + fb.unmarked + " 条总报未手标 → 请滚到下方推送历史点「有用/没用」";
+        } else {
+          nudge.style.display = "none";
+          nudge.textContent = "";
+        }
       } catch (e) {
         document.getElementById("pushSchedule").textContent = "推送自检加载失败";
         document.getElementById("effectObserve").textContent = "效果观察加载失败";
@@ -384,9 +394,12 @@
           + "<td class='" + (ok ? "" : "warn") + "'>" + esc(st) + "</td>"
           + "<td><a href='#' data-id='" + row.id + "' class='hist-title'>" + esc(row.title) + "</a></td>"
           + "<td>"
-          + "<button type='button' class='btn fb' data-id='" + row.id + "' data-fb='useful'>有用</button> "
-          + "<button type='button' class='btn fb' data-id='" + row.id + "' data-fb='useless'>没用</button> "
-          + "<span class='meta'>" + esc(row.feedback || "") + "</span></td>";
+          + (row.feedback
+            ? ("<span class='meta'>已标·" + esc(row.feedback) + "</span> ")
+            : "")
+          + "<button type='button' class='btn fb" + (row.feedback ? "" : " primary") + "' data-id='" + row.id + "' data-fb='useful'>有用</button> "
+          + "<button type='button' class='btn fb' data-id='" + row.id + "' data-fb='useless'>没用</button>"
+          + "</td>";
         tb.appendChild(tr);
       });
       if (!(d.rows || []).length) {

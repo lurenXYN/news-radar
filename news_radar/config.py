@@ -73,7 +73,7 @@ EFFECT_OBSERVE_DAYS = 7
 EVENT_CLUSTER_ENABLED = True
 EVENT_CLUSTER_HEAT = False  # when True, sector score uses event_score
 EVENT_CLUSTER_HOURS = 24
-EVENT_CLUSTER_SIM = 0.45  # title bigram Jaccard to join an existing cluster
+EVENT_CLUSTER_SIM = 0.55  # title bigram Jaccard to join (raised after mis-merge samples)
 
 # Server酱³ SendKey (SCT...). Empty = push disabled until set in settings / env.
 # Prefer env NEWS_RADAR_SERVERCHAN_SENDKEY or UI settings over hardcoding.

@@ -27,7 +27,7 @@ def _patch_db(tmp_path, monkeypatch):
     monkeypatch.setattr(db_mod, "DATA_DIR", tmp_path)
     monkeypatch.setattr(cfg, "EVENT_CLUSTER_ENABLED", True)
     monkeypatch.setattr(cfg, "EVENT_CLUSTER_HEAT", False)
-    monkeypatch.setattr(cfg, "EVENT_CLUSTER_SIM", 0.45)
+    monkeypatch.setattr(cfg, "EVENT_CLUSTER_SIM", 0.55)
     init_db()
 
 
@@ -45,7 +45,7 @@ def test_assign_cluster_merges_rewrites():
             "多家半导体设备厂商扩产 订单回暖",
             {"半导体"},
             recent,
-            threshold=0.45,
+            threshold=0.55,
         )
         == 1
     )
@@ -55,7 +55,7 @@ def test_assign_cluster_merges_rewrites():
             "半导体设备订单回暖 多家厂商扩产",
             {"军工"},
             recent,
-            threshold=0.45,
+            threshold=0.55,
         )
         is None
     )
@@ -65,7 +65,17 @@ def test_assign_cluster_merges_rewrites():
             "白酒春节备货启动 渠道库存回升",
             {"半导体"},
             recent,
-            threshold=0.45,
+            threshold=0.55,
+        )
+        is None
+    )
+    # Empty sectors must not merge by title alone.
+    assert (
+        assign_cluster(
+            "多家半导体设备厂商扩产 订单回暖",
+            set(),
+            recent,
+            threshold=0.55,
         )
         is None
     )

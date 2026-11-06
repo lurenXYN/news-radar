@@ -25,6 +25,7 @@ from news_radar.db import (
     link_article_sectors,
     list_push_log,
     list_recent_articles,
+    backfill_resonance_excess,
     list_unsettle_resonance_marks,
     load_setting,
     log_push,
@@ -50,7 +51,13 @@ from news_radar.notify import (
     notify_serverchan,
 )
 from news_radar.schedule import push_schedule_status
-from news_radar.score import action_hint, etfs_for_sector, is_context_sector, match_sectors
+from news_radar.score import (
+    action_hint,
+    etfs_for_sector,
+    is_context_sector,
+    match_sectors,
+    primary_sector_names,
+)
 from news_radar.sentiment import classify_tone
 from news_radar.settings import setting
 from news_radar.themes import merge_by_theme, theme_of
@@ -316,7 +323,7 @@ class RadarEngine:
                     attach_article_cluster(
                         aid,
                         title=str(row.get("title") or ""),
-                        sectors=[str(h.get("sector") or "") for h in hits],
+                        sectors=primary_sector_names(hits),
                         source=str(row.get("source") or ""),
                     )
                 except Exception as exc:
@@ -790,6 +797,11 @@ class RadarEngine:
                 next_bench_pct=bench,
                 next_excess_pct=excess,
             )
+        # Older rows may lack excess columns — fill from same-day median proxy.
+        try:
+            backfill_resonance_excess(limit=400)
+        except Exception:  # noqa: BLE001 — settle must not break refresh
+            pass
 
     def push_status(self) -> dict[str, Any]:
         """UI/API payload: schedule + recent pushes + light backtest."""
