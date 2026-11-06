@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -33,12 +32,12 @@ class SettingsIn(BaseModel):
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    """Start refresh loop; wait briefly for first snapshot."""
+    """Start refresh loop; yield immediately so /api/health can answer.
+
+    First snapshot fills asynchronously in the polling task — do not block
+    lifespan on it (probes would fail for up to ~20s during boot).
+    """
     engine.start()
-    for _ in range(80):
-        if engine.snapshot.get("updated_at"):
-            break
-        await asyncio.sleep(0.25)
     yield
     await engine.stop()
 

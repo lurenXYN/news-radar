@@ -24,6 +24,7 @@ Agents: **read this file before planning or coding** under `apps/news-radar/`.
 
 ## Done recently
 
+- [x] **超额回填/探活闭环（2026-11-06）** — `backfill_resonance_excess` 不再被 settle 早退挡住；`start()` 启动即回填；lifespan 立即 yield，`/api/health` 可探活。作战台侧占位 freeze 可覆盖见 market-desk v1.10.81。
 - [x] **效果样本修复（2026-11-06）** — 超额回填（同日中位代理）+ hint 需 `excess_n≥10`；入簇门槛 0.55 且禁止无板块互并；词表去掉裸「消费」、补充电/用电；总报正文+页头催手标。作战台 freeze 必写（缺雷达也写 `status=missing`）。
 - [x] **效果观察面板** — 手标汇总 + 共振次日一并展示；软 hints；观察窗自 2026-11-05。*(2026-11-05)*
 - [x] **总报减噪** — `DIGEST_DEMOTE_NEWS_ONLY`（默认开）：排序共振>盘面已动>背离>仅新闻；仅新闻不占 Top，进「其余留意」；导出同逻辑。*(2026-11-05)*

@@ -255,8 +255,14 @@ class RadarEngine:
         self._src_zero: dict[str, int] = {}
 
     def start(self) -> None:
-        """Create tables and start the polling task."""
+        """Create tables, backfill stale excess columns, start the polling task."""
         init_db()
+        try:
+            n = backfill_resonance_excess(limit=400)
+            if n:
+                log.info("startup excess backfill updated %s rows", n)
+        except Exception:  # noqa: BLE001 — never block boot
+            log.exception("startup excess backfill failed")
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._loop(), name="news-radar-loop")
 
@@ -761,42 +767,45 @@ class RadarEngine:
     def _settle_resonance(
         self, boards: list[dict[str, Any]], *, now: datetime
     ) -> None:
-        """Fill next-day board pct for prior resonance marks (once per mark)."""
-        if not is_trading_day(now):
-            return
-        # Settle after open so day-move is meaningful.
-        if now.hour * 60 + now.minute < 10 * 60:
-            return
-        today = now.strftime("%Y-%m-%d")
-        pending = list_unsettle_resonance_marks(today)
-        if not pending or not boards:
-            return
-        by_bk = {str(b.get("bk") or "").upper(): b for b in boards}
-        by_name = {str(b.get("name") or ""): b for b in boards}
-        bench = _board_median_pct(boards)
-        for m in pending:
-            bk = str(m.get("board_bk") or "").upper()
-            sector = str(m.get("sector") or "")
-            hit = by_bk.get(bk) if bk else None
-            if hit is None:
-                for name, b in by_name.items():
-                    if sector and sector.split("/")[0] in name:
-                        hit = b
-                        break
-            pct = float(hit["pct"]) if hit and hit.get("pct") is not None else None
-            excess = (
-                round(pct - bench, 4)
-                if pct is not None and bench is not None
-                else None
-            )
-            save_resonance_outcome(
-                str(m["trade_date"]),
-                sector,
-                next_date=today,
-                next_board_pct=pct,
-                next_bench_pct=bench,
-                next_excess_pct=excess,
-            )
+        """Fill next-day board pct for prior resonance marks (once per mark).
+
+        Historical excess backfill always runs (even on early-return paths) so
+        legacy absolute-only rows do not stay stuck behind settle gates.
+        """
+        if is_trading_day(now) and now.hour * 60 + now.minute >= 10 * 60:
+            today = now.strftime("%Y-%m-%d")
+            pending = list_unsettle_resonance_marks(today)
+            if pending and boards:
+                by_bk = {str(b.get("bk") or "").upper(): b for b in boards}
+                by_name = {str(b.get("name") or ""): b for b in boards}
+                bench = _board_median_pct(boards)
+                for m in pending:
+                    bk = str(m.get("board_bk") or "").upper()
+                    sector = str(m.get("sector") or "")
+                    hit = by_bk.get(bk) if bk else None
+                    if hit is None:
+                        for name, b in by_name.items():
+                            if sector and sector.split("/")[0] in name:
+                                hit = b
+                                break
+                    pct = (
+                        float(hit["pct"])
+                        if hit and hit.get("pct") is not None
+                        else None
+                    )
+                    excess = (
+                        round(pct - bench, 4)
+                        if pct is not None and bench is not None
+                        else None
+                    )
+                    save_resonance_outcome(
+                        str(m["trade_date"]),
+                        sector,
+                        next_date=today,
+                        next_board_pct=pct,
+                        next_bench_pct=bench,
+                        next_excess_pct=excess,
+                    )
         # Older rows may lack excess columns — fill from same-day median proxy.
         try:
             backfill_resonance_excess(limit=400)
