@@ -1,0 +1,43 @@
+# One-shot: fill unmarked push feedback from same-day ETF moves.
+name: Auto feedback
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "dry_run true/false"
+        required: false
+        default: "false"
+
+concurrency:
+  group: news-radar-auto-feedback
+  cancel-in-progress: true
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Auto-label over SSH
+        uses: appleboy/ssh-action@v1.2.2
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          command_timeout: 8m
+          script: |
+            set -euo pipefail
+            DRY="${{ github.event.inputs.dry_run || 'false' }}"
+            cd /opt/news-radar
+            .venv/bin/python - <<PY
+            import json
+            from news_radar.auto_feedback import auto_label_unmarked_pushes
+            out = auto_label_unmarked_pushes(
+                dry_run="${DRY}".lower() in ("1", "true", "yes"),
+            )
+            print(json.dumps(out, ensure_ascii=False, indent=2, default=str))
+            PY
+            echo "=== /api/effect ==="
+            curl -sS "http://127.0.0.1:8770/api/effect?days=30" || true
+            echo
