@@ -120,9 +120,25 @@ def push_feedback(push_id: int, body: PushFeedbackIn) -> dict[str, Any]:
     """Record user feedback on a push."""
     from news_radar.db import set_push_feedback
 
-    if not set_push_feedback(push_id, body.feedback):
+    if not set_push_feedback(push_id, body.feedback, src="hand"):
         raise HTTPException(400, "invalid feedback or missing row")
     return {"ok": True}
+
+
+@app.post("/api/push/history/auto-feedback")
+def push_auto_feedback(
+    since: str = Query(default="", description="YYYY-MM-DD; default EFFECT_OBSERVE_SINCE"),
+    dry_run: bool = Query(default=False),
+    force: bool = Query(default=False),
+) -> dict[str, Any]:
+    """Fill unmarked push feedback from same-day related ETF / board moves."""
+    from news_radar.auto_feedback import auto_label_unmarked_pushes
+
+    return auto_label_unmarked_pushes(
+        since=since or None,
+        dry_run=bool(dry_run),
+        force=bool(force),
+    )
 
 
 @app.get("/api/backtest/resonance")

@@ -156,6 +156,10 @@ def _migrate_push_log(conn: sqlite3.Connection) -> None:
         ("desp", "ALTER TABLE push_log ADD COLUMN desp TEXT DEFAULT ''"),
         ("error", "ALTER TABLE push_log ADD COLUMN error TEXT DEFAULT ''"),
         ("feedback", "ALTER TABLE push_log ADD COLUMN feedback TEXT DEFAULT ''"),
+        (
+            "feedback_src",
+            "ALTER TABLE push_log ADD COLUMN feedback_src TEXT DEFAULT ''",
+        ),
     ]
     for name, sql in alters:
         if name not in cols:
@@ -622,7 +626,8 @@ def query_push_log(
         ).fetchone()["n"]
         rows = conn.execute(
             f"SELECT id, push_key, title, created_at, ok, kind, "
-            f"substr(desp,1,200) AS desp_preview, error, feedback "
+            f"substr(desp,1,200) AS desp_preview, error, feedback, "
+            f"IFNULL(feedback_src,'') AS feedback_src "
             f"FROM push_log{clause} ORDER BY id DESC LIMIT ? OFFSET ?",
             (*args, limit, offset),
         ).fetchall()
@@ -639,23 +644,45 @@ def get_push_log(push_id: int) -> dict[str, Any] | None:
     """Return one push row including full desp body."""
     with connect() as conn:
         row = conn.execute(
-            "SELECT id, push_key, title, created_at, ok, kind, desp, error, feedback "
+            "SELECT id, push_key, title, created_at, ok, kind, desp, error, "
+            "feedback, IFNULL(feedback_src,'') AS feedback_src "
             "FROM push_log WHERE id=?",
             (int(push_id),),
         ).fetchone()
     return dict(row) if row else None
 
 
-def set_push_feedback(push_id: int, feedback: str) -> bool:
-    """Mark a push as useful / useless / clear."""
+def set_push_feedback(
+    push_id: int,
+    feedback: str,
+    *,
+    src: str = "hand",
+) -> bool:
+    """Mark a push as useful / useless / clear.
+
+    Args:
+        push_id: push_log primary key.
+        feedback: ``useful`` / ``useless`` / empty to clear.
+        src: ``hand`` (UI) or ``etf_day`` / ``board_day`` (auto proxy).
+    """
     fb = str(feedback or "").strip().lower()
     if fb not in ("", "useful", "useless"):
         return False
+    src_s = str(src or "hand").strip().lower() or "hand"
+    if fb == "":
+        src_s = ""
     with connect() as conn:
-        cur = conn.execute(
-            "UPDATE push_log SET feedback=? WHERE id=?",
-            (fb, int(push_id)),
-        )
+        cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(push_log)").fetchall()}
+        if "feedback_src" in cols:
+            cur = conn.execute(
+                "UPDATE push_log SET feedback=?, feedback_src=? WHERE id=?",
+                (fb, src_s, int(push_id)),
+            )
+        else:
+            cur = conn.execute(
+                "UPDATE push_log SET feedback=? WHERE id=?",
+                (fb, int(push_id)),
+            )
         return cur.rowcount > 0
 
 
@@ -920,8 +947,8 @@ def effect_observe_snapshot(days: int = 30) -> dict[str, Any]:
         "hints": hints,
         "note": (
             "效果只作观察：不改买卖闸门。"
-            "手标=你主观是否帮到跟单；共振次日超额=相对全板块中位数。"
-            "超额 hint 需 excess_n≥10。"
+            "手标=主观是否帮到跟单；也可 ETF 当日涨跌代理（feedback_src=etf_day）。"
+            "共振次日超额=相对全板块中位数。超额 hint 需 excess_n≥10。"
         ),
     }
 
